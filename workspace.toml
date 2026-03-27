@@ -1,0 +1,74 @@
+# HomeCore workspace manifest
+# Defines all repos, their roles, and their clone paths relative to this file.
+# Used by scripts/workspace-clone.sh and as the authoritative repo list.
+#
+# Roles:
+#   core    — main HomeCore server binary and crates
+#   plugin  — device adapter plugins (binary, deployed under plugins/<name>/)
+#   client  — UI and API consumers (web, TUI, MCP)
+
+[[repo]]
+role   = "core"
+name   = "homeCore"
+path   = "core"
+remote = "git@github.com:jeubanks/homeCore.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-hue"
+path   = "plugins/hc-hue"
+remote = "git@github.com:jeubanks/hc-hue.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-lutron"
+path   = "plugins/hc-lutron"
+remote = "git@github.com:jeubanks/hc-lutron.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-sonos"
+path   = "plugins/hc-sonos"
+remote = "git@github.com:jeubanks/hc-sonos.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-wled"
+path   = "plugins/hc-wled"
+remote = "git@github.com:jeubanks/hc-wled.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-yolink"
+path   = "plugins/hc-yolink"
+remote = "git@github.com:jeubanks/hc-yolink.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-zwave"
+path   = "plugins/hc-zwave"
+remote = "git@github.com:jeubanks/hc-zwave.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-plugin-template"
+path   = "plugins/hc-plugin-template"
+remote = "git@github.com:jeubanks/hc-plugin-template.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-web"
+path   = "clients/hc-web"
+remote = "git@github.com:jeubanks/hc-web.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-tui"
+path   = "clients/hc-tui"
+remote = "git@github.com:jeubanks/hc-tui.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-mcp"
+path   = "clients/hc-mcp"
+remote = "git@github.com:jeubanks/hc-mcp.git"
