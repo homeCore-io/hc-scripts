@@ -8,6 +8,7 @@
 #   ./run-dev.sh [OPTIONS]
 #
 # Options:
+#   --no-pull       Skip git pull in all repos (default: pull before building)
 #   --no-build      Skip all cargo builds; use existing binaries as-is
 #   --release       Build and run release binaries (default: debug)
 #   --help          Show this help
@@ -18,12 +19,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOMECORE_SRC="$WORKSPACE_ROOT/core"
 CONFIG="config/homecore.dev.toml"
+PULL=true
 BUILD=true
 PROFILE="debug"
 CARGO_FLAG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --no-pull)  PULL=false; shift ;;
         --no-build) BUILD=false; shift ;;
         --release)  PROFILE="release"; CARGO_FLAG="--release"; shift ;;
         --help|-h)
@@ -46,13 +49,40 @@ done
 #    fi
 #fi
 
-if $BUILD; then
-    # Collect all plugin repos that have a Cargo.toml
-    PLUGIN_DIRS=()
-    for dir in "$WORKSPACE_ROOT"/plugins/hc-*/; do
-        [[ -f "${dir}Cargo.toml" ]] && PLUGIN_DIRS+=("$dir")
-    done
+# ---------------------------------------------------------------------------
+# Pull phase
+# ---------------------------------------------------------------------------
 
+# Collect all plugin repos that have a Cargo.toml (used by both pull + build)
+PLUGIN_DIRS=()
+for dir in "$WORKSPACE_ROOT"/plugins/hc-*/; do
+    [[ -f "${dir}Cargo.toml" ]] && PLUGIN_DIRS+=("$dir")
+done
+
+if $PULL; then
+    PULL_DIRS=("$HOMECORE_SRC" "${PLUGIN_DIRS[@]}")
+    TOTAL_PULL=${#PULL_DIRS[@]}
+    echo "==> Pulling $TOTAL_PULL repos"
+    echo
+
+    for dir in "${PULL_DIRS[@]}"; do
+        name="$(basename "$dir")"
+        branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+        printf "    %-20s  [%s]  " "$name" "$branch"
+        if git -C "$dir" pull --ff-only --quiet 2>/dev/null; then
+            echo "ok"
+        else
+            echo "WARN: pull failed (offline or dirty?) — continuing with local state" >&2
+        fi
+    done
+    echo
+fi
+
+# ---------------------------------------------------------------------------
+# Build phase
+# ---------------------------------------------------------------------------
+
+if $BUILD; then
     TOTAL=$(( ${#PLUGIN_DIRS[@]} + 1 ))   # plugins + homecore
     FAILED=()
     STEP=0
@@ -60,7 +90,7 @@ if $BUILD; then
     echo "==> Building $TOTAL Rust crates ($PROFILE)"
     echo
 
-    # Build each hc-* plugin repo.  A plugin build failure warns but does not
+    # Build each hc-* plugin repo. A plugin build failure warns but does not
     # abort — homecore can still start with a stale binary for that plugin.
     for dir in "${PLUGIN_DIRS[@]}"; do
         name="$(basename "$dir")"
