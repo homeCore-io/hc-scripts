@@ -38,6 +38,7 @@
 #   hc-sonos      Sonos UPnP bridge
 #   hc-hue        Philips Hue bridge
 #   hc-zwave      Z-Wave JS WebSocket bridge
+#   hc-matter     Matter controller/bridge plugin
 #
 # OPTIONS
 #   --all           Build and install all components (default when none specified)
@@ -69,6 +70,7 @@ COMPONENTS=()
 # ---------------------------------------------------------------------------
 
 HOMECORE_SRC="$WORKSPACE_ROOT/core"
+CHIP_TOOL_STAGED="$WORKSPACE_ROOT/plugins/hc-matter/bin/chip-tool"
 
 # ===========================================================================
 # PLUGIN REGISTRY
@@ -91,6 +93,7 @@ PLUGINS=(
     hc-sonos
     hc-hue
     hc-zwave
+    hc-matter
 )
 
 declare -A PLUGIN_SRC_DIR=(
@@ -99,6 +102,7 @@ declare -A PLUGIN_SRC_DIR=(
     [hc-sonos]="$WORKSPACE_ROOT/plugins/hc-sonos"
     [hc-hue]="$WORKSPACE_ROOT/plugins/hc-hue"
     [hc-zwave]="$WORKSPACE_ROOT/plugins/hc-zwave"
+    [hc-matter]="$WORKSPACE_ROOT/plugins/hc-matter"
 )
 
 ALL_COMPONENTS=(homecore "${PLUGINS[@]}")
@@ -246,6 +250,10 @@ build_component() {
     if [[ "$comp" == "homecore" ]]; then
         log "Building homecore ($RELEASE_DIR)"
         cargo build $RELEASE_FLAG --manifest-path "$HOMECORE_SRC/Cargo.toml"
+    elif [[ "$comp" == "hc-matter" ]]; then
+        local dir="${PLUGIN_SRC_DIR[$comp]}"
+        log "Building $comp ($RELEASE_DIR)"
+        cargo build $RELEASE_FLAG --features matter-stack --manifest-path "$dir/Cargo.toml"
     else
         local dir="${PLUGIN_SRC_DIR[$comp]}"
         log "Building $comp ($RELEASE_DIR)"
@@ -288,6 +296,20 @@ install_plugin_binary() {
     cp "$src" "$dst"
     chmod 755 "$dst"
     ok "plugins/$name/bin/$name"
+}
+
+install_matter_tooling() {
+    local dst="$DEST/plugins/hc-matter/bin/chip-tool"
+
+    if [[ ! -x "$CHIP_TOOL_STAGED" ]]; then
+        echo "ERROR: staged chip-tool missing: $CHIP_TOOL_STAGED" >&2
+        echo "       Run scripts/ensure-chip-tool.sh or set CHIP_TOOL_SOURCE" >&2
+        return 1
+    fi
+
+    cp "$CHIP_TOOL_STAGED" "$dst"
+    chmod 755 "$dst"
+    ok "plugins/hc-matter/bin/chip-tool"
 }
 
 # ===========================================================================
@@ -371,6 +393,15 @@ for comp in "${COMPONENTS[@]}"; do
 done
 echo
 
+if [[ " ${COMPONENTS[*]} " == *" hc-matter "* ]]; then
+    log "Provisioning chip-tool for hc-matter"
+    if ! "$WORKSPACE_ROOT/scripts/ensure-chip-tool.sh"; then
+        echo "ERROR: chip-tool provisioning failed; cannot deploy hc-matter without commissioner binary" >&2
+        exit 1
+    fi
+    echo
+fi
+
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
@@ -402,6 +433,9 @@ for comp in "${COMPONENTS[@]}"; do
         install_homecore_binary
     else
         install_plugin_binary "$comp"
+        if [[ "$comp" == "hc-matter" ]]; then
+            install_matter_tooling
+        fi
     fi
 done
 echo

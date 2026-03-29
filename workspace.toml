@@ -56,6 +56,12 @@ path   = "plugins/hc-plugin-template"
 remote = "git@github.com:jeubanks/hc-plugin-template.git"
 
 [[repo]]
+role   = "plugin"
+name   = "hc-matter"
+path   = "plugins/hc-matter"
+remote = "git@github.com:jeubanks/hc-matter.git"
+
+[[repo]]
 role   = "client"
 name   = "hc-web"
 path   = "clients/hc-web"

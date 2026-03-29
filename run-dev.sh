@@ -38,6 +38,14 @@ done
 # Build phase
 # ---------------------------------------------------------------------------
 
+#CHIP_TOOL_BOOTSTRAP="$WORKSPACE_ROOT/scripts/ensure-chip-tool.sh"
+#if [[ -x "$CHIP_TOOL_BOOTSTRAP" ]]; then
+#    if ! "$CHIP_TOOL_BOOTSTRAP"; then
+#        echo "  WARN: chip-tool provisioning failed; hc-matter commissioning will report degraded health" >&2
+#        echo
+#    fi
+#fi
+
 if $BUILD; then
     # Collect all plugin repos that have a Cargo.toml
     PLUGIN_DIRS=()
@@ -58,7 +66,12 @@ if $BUILD; then
         name="$(basename "$dir")"
         STEP=$(( STEP + 1 ))
         echo "[$STEP/$TOTAL] $name"
-        if cargo build $CARGO_FLAG --manifest-path "${dir}Cargo.toml" 2>&1; then
+        BUILD_FEATURES=""
+#        if [[ "$name" == "hc-matter" ]]; then
+#            BUILD_FEATURES="--features matter-stack"
+#        fi
+
+        if cargo build $CARGO_FLAG $BUILD_FEATURES --manifest-path "${dir}Cargo.toml" 2>&1; then
             echo "  ok"
         else
             echo "  WARN: $name build failed — stale binary will be used" >&2
