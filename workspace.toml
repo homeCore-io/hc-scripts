@@ -75,6 +75,36 @@ remote = "git@github.com:homeCore-io/hc-web.git"
 
 [[repo]]
 role   = "client"
+name   = "hc-web-leptos"
+path   = "clients/hc-web-leptos"
+remote = "git@github.com:homeCore-io/hc-web-leptos.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-web-admin-react"
+path   = "clients/hc-web-admin-react"
+remote = "git@github.com:homeCore-io/hc-web-admin-react.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-dashboard"
+path   = "clients/hc-dashboard"
+remote = "git@github.com:homeCore-io/hc-dashboard.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-web-svelte"
+path   = "clients/hc-web-svelte"
+remote = "git@github.com:homeCore-io/hc-web-svelte.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-web-dioxus"
+path   = "clients/hc-web-dioxus"
+remote = "git@github.com:homeCore-io/hc-web-dioxus.git"
+
+[[repo]]
+role   = "client"
 name   = "hc-tui"
 path   = "clients/hc-tui"
 remote = "git@github.com:homeCore-io/hc-tui.git"
