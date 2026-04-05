@@ -59,8 +59,14 @@ for dir in "$WORKSPACE_ROOT"/plugins/hc-*/; do
     [[ -f "${dir}Cargo.toml" ]] && PLUGIN_DIRS+=("$dir")
 done
 
+# Collect SDK repos that have a Cargo.toml (must be pulled before plugin builds)
+SDK_DIRS=()
+for dir in "$WORKSPACE_ROOT"/sdks/hc-plugin-sdk-*/; do
+    [[ -f "${dir}Cargo.toml" ]] && SDK_DIRS+=("$dir")
+done
+
 if $PULL; then
-    PULL_DIRS=("$HOMECORE_SRC" "${PLUGIN_DIRS[@]}")
+    PULL_DIRS=("$HOMECORE_SRC" "${SDK_DIRS[@]}" "${PLUGIN_DIRS[@]}")
     TOTAL_PULL=${#PULL_DIRS[@]}
     echo "==> Pulling $TOTAL_PULL repos"
     echo
