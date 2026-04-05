@@ -5,6 +5,7 @@
 # Roles:
 #   core    — main HomeCore server binary and crates
 #   plugin  — device adapter plugins (binary, deployed under plugins/<name>/)
+#   sdk     — plugin SDKs (Rust, Python, Node.js, .NET)
 #   client  — UI and API consumers (web, TUI, MCP)
 
 [[repo]]
@@ -66,6 +67,30 @@ role   = "plugin"
 name   = "hc-matter"
 path   = "plugins/hc-matter"
 remote = "git@github.com:homeCore-io/hc-matter.git"
+
+[[repo]]
+role   = "sdk"
+name   = "hc-plugin-sdk-rs"
+path   = "sdks/hc-plugin-sdk-rs"
+remote = "git@github.com:homeCore-io/hc-plugin-sdk-rs.git"
+
+[[repo]]
+role   = "sdk"
+name   = "hc-plugin-sdk-py"
+path   = "sdks/hc-plugin-sdk-py"
+remote = "git@github.com:homeCore-io/hc-plugin-sdk-py.git"
+
+[[repo]]
+role   = "sdk"
+name   = "hc-plugin-sdk-js"
+path   = "sdks/hc-plugin-sdk-js"
+remote = "git@github.com:homeCore-io/hc-plugin-sdk-js.git"
+
+[[repo]]
+role   = "sdk"
+name   = "hc-plugin-sdk-dotnet"
+path   = "sdks/hc-plugin-sdk-dotnet"
+remote = "git@github.com:homeCore-io/hc-plugin-sdk-dotnet.git"
 
 [[repo]]
 role   = "client"

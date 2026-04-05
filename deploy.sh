@@ -37,7 +37,9 @@
 #   hc-lutron     Lutron RadioRA2 telnet bridge
 #   hc-sonos      Sonos UPnP bridge
 #   hc-hue        Philips Hue bridge
+#   hc-wled       WLED LED controller
 #   hc-zwave      Z-Wave JS WebSocket bridge
+#   hc-isy        ISY994 / Polisy / eISY bridge
 #   hc-matter     Matter controller/bridge plugin
 #
 # OPTIONS
@@ -92,7 +94,9 @@ PLUGINS=(
     hc-lutron
     hc-sonos
     hc-hue
+    hc-wled
     hc-zwave
+    hc-isy
     hc-matter
 )
 
@@ -101,7 +105,9 @@ declare -A PLUGIN_SRC_DIR=(
     [hc-lutron]="$WORKSPACE_ROOT/plugins/hc-lutron"
     [hc-sonos]="$WORKSPACE_ROOT/plugins/hc-sonos"
     [hc-hue]="$WORKSPACE_ROOT/plugins/hc-hue"
+    [hc-wled]="$WORKSPACE_ROOT/plugins/hc-wled"
     [hc-zwave]="$WORKSPACE_ROOT/plugins/hc-zwave"
+    [hc-isy]="$WORKSPACE_ROOT/plugins/hc-isy"
     [hc-matter]="$WORKSPACE_ROOT/plugins/hc-matter"
 )
 

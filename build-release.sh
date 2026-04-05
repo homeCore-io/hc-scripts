@@ -61,6 +61,18 @@ for dir in "$WORKSPACE_ROOT"/plugins/hc-*/; do
     fi
 done
 
+# SDKs
+for dir in "$WORKSPACE_ROOT"/sdks/hc-plugin-sdk-*/; do
+    [[ -d "$dir" ]] || continue
+    if [[ -f "${dir}Cargo.toml" ]]; then
+        RUST_DIRS+=("$dir")
+    elif [[ -f "${dir}package.json" ]]; then
+        NODE_DIRS+=("$dir")
+    else
+        SKIPPED_DIRS+=("$dir")
+    fi
+done
+
 # Clients
 for dir in "$WORKSPACE_ROOT"/clients/hc-*/; do
     [[ -d "$dir" ]] || continue
