@@ -38,43 +38,55 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Build phase
+# Collect repos
 # ---------------------------------------------------------------------------
 
-#CHIP_TOOL_BOOTSTRAP="$WORKSPACE_ROOT/scripts/ensure-chip-tool.sh"
-#if [[ -x "$CHIP_TOOL_BOOTSTRAP" ]]; then
-#    if ! "$CHIP_TOOL_BOOTSTRAP"; then
-#        echo "  WARN: chip-tool provisioning failed; hc-matter commissioning will report degraded health" >&2
-#        echo
-#    fi
-#fi
+# SDK repos (must be pulled + built before plugins that depend on them)
+SDK_DIRS=()
+for dir in "$WORKSPACE_ROOT"/sdks/hc-plugin-sdk-*/; do
+    [[ -d "$dir" ]] && SDK_DIRS+=("$dir")
+done
 
-# ---------------------------------------------------------------------------
-# Pull phase
-# ---------------------------------------------------------------------------
-
-# Collect all plugin repos that have a Cargo.toml (used by both pull + build)
+# Plugin repos with a Cargo.toml
 PLUGIN_DIRS=()
 for dir in "$WORKSPACE_ROOT"/plugins/hc-*/; do
     [[ -f "${dir}Cargo.toml" ]] && PLUGIN_DIRS+=("$dir")
 done
 
-# Collect SDK repos that have a Cargo.toml (must be pulled before plugin builds)
-SDK_DIRS=()
-for dir in "$WORKSPACE_ROOT"/sdks/hc-plugin-sdk-*/; do
-    [[ -f "${dir}Cargo.toml" ]] && SDK_DIRS+=("$dir")
+# Client repos (pulled but not built here)
+CLIENT_DIRS=()
+for dir in "$WORKSPACE_ROOT"/clients/hc-*/; do
+    [[ -d "${dir}.git" ]] && CLIENT_DIRS+=("$dir")
 done
 
+# ---------------------------------------------------------------------------
+# Pull phase
+# ---------------------------------------------------------------------------
+
 if $PULL; then
-    PULL_DIRS=("$HOMECORE_SRC" "${SDK_DIRS[@]}" "${PLUGIN_DIRS[@]}")
+    # Pull ourselves first so the rest of the script is up to date on next run
+    SELF_DIR="$SCRIPT_DIR"
+    if [[ -d "$SELF_DIR/.git" ]]; then
+        printf "    %-25s  " "hc-scripts (self)"
+        branch=$(git -C "$SELF_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+        printf "[%s]  " "$branch"
+        if git -C "$SELF_DIR" pull --ff-only --quiet 2>/dev/null; then
+            echo "ok"
+        else
+            echo "WARN: pull failed (offline or dirty?)" >&2
+        fi
+    fi
+
+    PULL_DIRS=("$HOMECORE_SRC" "${SDK_DIRS[@]}" "${PLUGIN_DIRS[@]}" "${CLIENT_DIRS[@]}")
     TOTAL_PULL=${#PULL_DIRS[@]}
     echo "==> Pulling $TOTAL_PULL repos"
     echo
 
     for dir in "${PULL_DIRS[@]}"; do
         name="$(basename "$dir")"
+        [[ -d "${dir}.git" ]] || continue
         branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
-        printf "    %-20s  [%s]  " "$name" "$branch"
+        printf "    %-25s  [%s]  " "$name" "$branch"
         if git -C "$dir" pull --ff-only --quiet 2>/dev/null; then
             echo "ok"
         else
@@ -102,12 +114,8 @@ if $BUILD; then
         name="$(basename "$dir")"
         STEP=$(( STEP + 1 ))
         echo "[$STEP/$TOTAL] $name"
-        BUILD_FEATURES=""
-#        if [[ "$name" == "hc-matter" ]]; then
-#            BUILD_FEATURES="--features matter-stack"
-#        fi
 
-        if cargo build $CARGO_FLAG $BUILD_FEATURES --manifest-path "${dir}Cargo.toml" 2>&1; then
+        if cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "${dir}Cargo.toml" 2>&1; then
             echo "  ok"
         else
             echo "  WARN: $name build failed — stale binary will be used" >&2
@@ -119,7 +127,7 @@ if $BUILD; then
     # Build homecore last.  Failure here is fatal — nothing to start.
     STEP=$(( STEP + 1 ))
     echo "[$STEP/$TOTAL] homecore"
-    if ! cargo build $CARGO_FLAG --manifest-path "$HOMECORE_SRC/Cargo.toml" --bin homecore 2>&1; then
+    if ! cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "$HOMECORE_SRC/Cargo.toml" --bin homecore 2>&1; then
         echo
         echo "ERROR: homecore build failed — cannot start." >&2
         exit 1
