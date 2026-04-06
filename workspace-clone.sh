@@ -85,7 +85,7 @@ for pair in "${REPO_PAIRS[@]}"; do
         mkdir -p "$(dirname "$dst")"
         echo "[clone]    $rel"
         echo "           $remote → $dst"
-        if git clone "$remote" "$dst"; then
+        if git clone -b develop "$remote" "$dst"; then
             CLONED=$((CLONED + 1))
         else
             echo "[fail]     $rel" >&2
