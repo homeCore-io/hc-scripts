@@ -58,6 +58,12 @@ remote = "git@github.com:homeCore-io/hc-isy.git"
 
 [[repo]]
 role   = "plugin"
+name   = "hc-caseta"
+path   = "plugins/hc-caseta"
+remote = "git@github.com:homeCore-io/hc-caseta.git"
+
+[[repo]]
+role   = "plugin"
 name   = "hc-plugin-template"
 path   = "plugins/hc-plugin-template"
 remote = "git@github.com:homeCore-io/hc-plugin-template.git"

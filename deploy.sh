@@ -9,7 +9,7 @@
 #     config/
 #       homecore.toml                  ← main config (preserved; --force-config to overwrite)
 #       profiles/                      ← ecosystem profiles (all files, recursively)
-#     rules/                           ← automation rule TOML files
+#     rules/                           ← automation rule RON files
 #     data/                            ← state.redb, history.db  (runtime, not deployed)
 #     logs/                            ← homecore rolling logs    (runtime, not deployed)
 #     scripts/
@@ -40,6 +40,7 @@
 #   hc-wled       WLED LED controller
 #   hc-zwave      Z-Wave JS WebSocket bridge
 #   hc-isy        ISY994 / Polisy / eISY bridge
+#   hc-caseta     Lutron Caseta Pro bridge
 #   hc-matter     Matter controller/bridge plugin
 #
 # OPTIONS
@@ -92,6 +93,7 @@ CHIP_TOOL_STAGED="$WORKSPACE_ROOT/plugins/hc-matter/bin/chip-tool"
 PLUGINS=(
     hc-yolink
     hc-lutron
+    hc-caseta
     hc-sonos
     hc-hue
     hc-wled
@@ -103,6 +105,7 @@ PLUGINS=(
 declare -A PLUGIN_SRC_DIR=(
     [hc-yolink]="$WORKSPACE_ROOT/plugins/hc-yolink"
     [hc-lutron]="$WORKSPACE_ROOT/plugins/hc-lutron"
+    [hc-caseta]="$WORKSPACE_ROOT/plugins/hc-caseta"
     [hc-sonos]="$WORKSPACE_ROOT/plugins/hc-sonos"
     [hc-hue]="$WORKSPACE_ROOT/plugins/hc-hue"
     [hc-wled]="$WORKSPACE_ROOT/plugins/hc-wled"
@@ -337,13 +340,13 @@ sync_homecore_config() {
         done < <(find "$HOMECORE_SRC/config/profiles" -type f -print0)
     fi
 
-    # Automation rules (live .toml files, not examples)
+    # Automation rules (live .ron files, not examples; also legacy .toml)
     if [[ -d "$HOMECORE_SRC/rules" ]]; then
         while IFS= read -r -d '' f; do
             [[ "$f" == */examples/* ]] && continue
             local rel_path="${f#"$HOMECORE_SRC/rules/"}"
             sync_file "$f" "$DEST/rules/$rel_path"
-        done < <(find "$HOMECORE_SRC/rules" -type f -name "*.toml" -print0)
+        done < <(find "$HOMECORE_SRC/rules" -type f \( -name "*.ron" -o -name "*.toml" \) -print0)
     fi
 
 }
