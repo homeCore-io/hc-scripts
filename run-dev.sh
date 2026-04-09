@@ -11,6 +11,7 @@
 #   --no-pull       Skip git pull in all repos (default: pull before building)
 #   --no-build      Skip all cargo builds; use existing binaries as-is
 #   --release       Build and run release binaries (default: debug)
+#   --webui         Build and serve hc-web-leptos (trunk serve) alongside homecore
 #   --help          Show this help
 
 set -uo pipefail
@@ -21,14 +22,17 @@ HOMECORE_SRC="$WORKSPACE_ROOT/core"
 CONFIG="config/homecore.dev.toml"
 PULL=true
 BUILD=true
+WEBUI=false
 PROFILE="debug"
 CARGO_FLAG=""
+WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web-leptos"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-pull)  PULL=false; shift ;;
         --no-build) BUILD=false; shift ;;
         --release)  PROFILE="release"; CARGO_FLAG="--release"; shift ;;
+        --webui)    WEBUI=true; shift ;;
         --help|-h)
             sed -n '2,/^set /p' "$0" | grep -E '^#' | sed 's/^# \?//'
             exit 0
@@ -101,7 +105,8 @@ fi
 # ---------------------------------------------------------------------------
 
 if $BUILD; then
-    TOTAL=$(( ${#PLUGIN_DIRS[@]} + 1 ))   # plugins + homecore
+    WEBUI_COUNT=0; $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]] && WEBUI_COUNT=1
+    TOTAL=$(( ${#PLUGIN_DIRS[@]} + 1 + WEBUI_COUNT ))   # plugins + homecore + webui
     FAILED=()
     STEP=0
 
@@ -135,12 +140,25 @@ if $BUILD; then
     echo "  ok"
     echo
 
+    # Build hc-web-leptos if --webui
+    if $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]]; then
+        STEP=$(( STEP + 1 ))
+        echo "[$STEP/$TOTAL] hc-web-leptos (trunk build)"
+        if ! trunk build --config "$WEBUI_DIR/Trunk.toml" 2>&1; then
+            echo "  WARN: hc-web-leptos build failed — trunk serve may use stale assets" >&2
+            FAILED+=("hc-web-leptos")
+        else
+            echo "  ok"
+        fi
+        echo
+    fi
+
     # Summary
     if [[ ${#FAILED[@]} -eq 0 ]]; then
-        echo "==> All $TOTAL builds succeeded"
+        echo "==> All builds succeeded"
     else
-        echo "==> Build complete — ${#FAILED[@]} plugin(s) failed: ${FAILED[*]}"
-        echo "    Continuing with stale binaries for those plugins."
+        echo "==> Build complete — ${#FAILED[@]} component(s) failed: ${FAILED[*]}"
+        echo "    Continuing with stale binaries for those components."
     fi
     echo
 fi
@@ -157,10 +175,37 @@ if [[ ! -f "$BINARY" ]]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Web UI (trunk serve as a background process)
+# ---------------------------------------------------------------------------
+
+TRUNK_PID=""
+
+cleanup() {
+    if [[ -n "$TRUNK_PID" ]]; then
+        echo "==> Stopping trunk serve (pid $TRUNK_PID)"
+        kill "$TRUNK_PID" 2>/dev/null
+        wait "$TRUNK_PID" 2>/dev/null
+    fi
+}
+trap cleanup EXIT INT TERM
+
+if $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]]; then
+    echo "==> Starting trunk serve (hc-web-leptos :3000)"
+    trunk serve --config "$WEBUI_DIR/Trunk.toml" &
+    TRUNK_PID=$!
+    echo "    pid: $TRUNK_PID"
+    echo
+fi
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
 echo "==> Starting HomeCore (dev)"
 echo "    home  : $HOMECORE_SRC"
 echo "    config: $CONFIG"
 echo "    binary: $BINARY"
 echo
 
-exec "$BINARY" --home "$HOMECORE_SRC" --config "$CONFIG"
+"$BINARY" --home "$HOMECORE_SRC" --config "$CONFIG"
