@@ -43,7 +43,6 @@
 #   hc-caseta     Lutron Caseta Pro bridge
 #   hc-matter     Matter controller/bridge plugin
 #   hc-ecowitt    Ecowitt weather station gateway
-    hc-ecowitt
 #
 # OPTIONS
 #   --all           Build and install all components (default when none specified)
@@ -76,7 +75,6 @@ COMPONENTS=()
 
 HOMECORE_SRC="$WORKSPACE_ROOT/core"
 CHIP_TOOL_STAGED="$WORKSPACE_ROOT/plugins/hc-matter/bin/chip-tool"
-    hc-ecowitt
 
 # ===========================================================================
 # PLUGIN REGISTRY
@@ -117,7 +115,6 @@ declare -A PLUGIN_SRC_DIR=(
     [hc-isy]="$WORKSPACE_ROOT/plugins/hc-isy"
     [hc-matter]="$WORKSPACE_ROOT/plugins/hc-matter"
     [hc-ecowitt]="$WORKSPACE_ROOT/plugins/hc-ecowitt"
-    hc-ecowitt
 )
 
 ALL_COMPONENTS=(homecore "${PLUGINS[@]}")
@@ -266,7 +263,6 @@ build_component() {
         log "Building homecore ($RELEASE_DIR)"
         cargo build $RELEASE_FLAG --manifest-path "$HOMECORE_SRC/Cargo.toml"
     elif [[ "$comp" == "hc-matter" ]]; then
-    hc-ecowitt
         local dir="${PLUGIN_SRC_DIR[$comp]}"
         log "Building $comp ($RELEASE_DIR)"
         cargo build $RELEASE_FLAG --features matter-stack --manifest-path "$dir/Cargo.toml"
@@ -316,7 +312,6 @@ install_plugin_binary() {
 
 install_matter_tooling() {
     local dst="$DEST/plugins/hc-matter/bin/chip-tool"
-    hc-ecowitt
 
     if [[ ! -x "$CHIP_TOOL_STAGED" ]]; then
         echo "ERROR: staged chip-tool missing: $CHIP_TOOL_STAGED" >&2
@@ -327,7 +322,6 @@ install_matter_tooling() {
     cp "$CHIP_TOOL_STAGED" "$dst"
     chmod 755 "$dst"
     ok "plugins/hc-matter/bin/chip-tool"
-    hc-ecowitt
 }
 
 # ===========================================================================
@@ -412,12 +406,9 @@ done
 echo
 
 if [[ " ${COMPONENTS[*]} " == *" hc-matter "* ]]; then
-    hc-ecowitt
     log "Provisioning chip-tool for hc-matter"
-    hc-ecowitt
     if ! "$WORKSPACE_ROOT/scripts/ensure-chip-tool.sh"; then
         echo "ERROR: chip-tool provisioning failed; cannot deploy hc-matter without commissioner binary" >&2
-    hc-ecowitt
         exit 1
     fi
     echo
@@ -455,7 +446,6 @@ for comp in "${COMPONENTS[@]}"; do
     else
         install_plugin_binary "$comp"
         if [[ "$comp" == "hc-matter" ]]; then
-    hc-ecowitt
             install_matter_tooling
         fi
     fi
