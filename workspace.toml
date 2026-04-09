@@ -157,3 +157,9 @@ role   = "docs"
 name   = "homeCore-io.github.io"
 path   = "homeCore-io.github.io"
 remote = "git@github.com:homeCore-io/homeCore-io.github.io.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-ecowitt"
+path   = "plugins/hc-ecowitt"
+remote = "git@github.com:homeCore-io/hc-ecowitt.git"
