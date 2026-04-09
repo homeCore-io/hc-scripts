@@ -7,6 +7,7 @@
 # Options:
 #   --dest DIR        Root directory for cloning (default: workspace root)
 #   --fetch           Fetch from origin in every already-cloned repo
+#   --pull            Pull (fetch + fast-forward) in every already-cloned repo
 #   --checkout BRANCH Checkout BRANCH in every already-cloned repo
 #   --help
 #
@@ -16,6 +17,9 @@
 #
 #   # Clone missing repos, then fetch + switch everything to develop:
 #   ./workspace-clone.sh --fetch --checkout develop
+#
+#   # Pull latest changes in all repos (fast-forward only):
+#   ./workspace-clone.sh --pull
 #
 #   # Fetch all repos without switching branches:
 #   ./workspace-clone.sh --fetch
@@ -30,6 +34,7 @@ WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MANIFEST="$SCRIPT_DIR/workspace.toml"
 DEST="$WORKSPACE_ROOT"
 DO_FETCH=false
+DO_PULL=false
 CHECKOUT_BRANCH=""
 
 # -----------------------------------------------------------------------------
@@ -39,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dest)     DEST="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
         --fetch)    DO_FETCH=true; shift ;;
+        --pull)     DO_PULL=true; shift ;;
         --checkout) CHECKOUT_BRANCH="$2"; shift 2 ;;
         --help|-h)
             sed -n '2,20p' "$0" | sed 's/^# \?//'
@@ -72,6 +78,7 @@ mapfile -t REPO_PAIRS < <(awk '
 CLONED=0
 SKIPPED=0
 FETCHED=0
+PULLED=0
 SWITCHED=0
 FAILED=0
 
@@ -104,6 +111,18 @@ for pair in "${REPO_PAIRS[@]}"; do
             FETCHED=$((FETCHED + 1))
         else
             echo "           fetch failed (skipping)" >&2
+        fi
+    fi
+
+    # ── Pull (fetch + fast-forward merge) ────────────────────────────────────
+    if [[ "$DO_PULL" == true ]]; then
+        branch=$(git -C "$dst" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+        if git -C "$dst" pull --ff-only --quiet origin "$branch" 2>/dev/null; then
+            echo "           pulled $branch"
+            PULLED=$((PULLED + 1))
+        else
+            echo "           pull failed on $branch (diverged or dirty?)" >&2
+            FAILED=$((FAILED + 1))
         fi
     fi
 
@@ -143,5 +162,5 @@ done
 # -----------------------------------------------------------------------------
 echo
 echo "Summary:"
-echo "  cloned=$CLONED  present=$SKIPPED  fetched=$FETCHED  switched=$SWITCHED  failed=$FAILED"
+echo "  cloned=$CLONED  present=$SKIPPED  fetched=$FETCHED  pulled=$PULLED  switched=$SWITCHED  failed=$FAILED"
 echo "  root: $DEST"
