@@ -12,6 +12,8 @@
 #     rules/                           ← automation rule RON files
 #     data/                            ← state.redb, history.db  (runtime, not deployed)
 #     logs/                            ← homecore rolling logs    (runtime, not deployed)
+#     ui/
+#       dist/                          ← Leptos/WASM admin UI (trunk build output)
 #     scripts/
 #       service-templates/             ← systemd / launchd unit templates
 #     plugins/
@@ -33,6 +35,7 @@
 #
 # COMPONENTS
 #   homecore      Main HomeCore server
+#   hc-web        Leptos/WASM admin UI (requires trunk)
 #   hc-yolink     YoLink cloud MQTT bridge
 #   hc-lutron     Lutron RadioRA2 telnet bridge
 #   hc-sonos      Sonos UPnP bridge
@@ -41,7 +44,6 @@
 #   hc-zwave      Z-Wave JS WebSocket bridge
 #   hc-isy        ISY994 / Polisy / eISY bridge
 #   hc-caseta     Lutron Caseta Pro bridge
-#   hc-matter     Matter controller/bridge plugin
 #   hc-ecowitt    Ecowitt weather station gateway
 #
 # OPTIONS
@@ -74,7 +76,7 @@ COMPONENTS=()
 # ---------------------------------------------------------------------------
 
 HOMECORE_SRC="$WORKSPACE_ROOT/core"
-CHIP_TOOL_STAGED="$WORKSPACE_ROOT/plugins/hc-matter/bin/chip-tool"
+WEBUI_SRC="$WORKSPACE_ROOT/clients/hc-web-leptos"
 
 # ===========================================================================
 # PLUGIN REGISTRY
@@ -100,7 +102,6 @@ PLUGINS=(
     hc-wled
     hc-zwave
     hc-isy
-    hc-matter
     hc-ecowitt
 )
 
@@ -113,11 +114,10 @@ declare -A PLUGIN_SRC_DIR=(
     [hc-wled]="$WORKSPACE_ROOT/plugins/hc-wled"
     [hc-zwave]="$WORKSPACE_ROOT/plugins/hc-zwave"
     [hc-isy]="$WORKSPACE_ROOT/plugins/hc-isy"
-    [hc-matter]="$WORKSPACE_ROOT/plugins/hc-matter"
     [hc-ecowitt]="$WORKSPACE_ROOT/plugins/hc-ecowitt"
 )
 
-ALL_COMPONENTS=(homecore "${PLUGINS[@]}")
+ALL_COMPONENTS=(homecore hc-web "${PLUGINS[@]}")
 
 # ===========================================================================
 # ARGUMENT PARSING
@@ -166,11 +166,13 @@ ok()   { echo "    [ok]     $*"; }
 skip() { echo "    [skip]   $*"; }
 warn() { echo "    [warn]   $*"; }
 
-# Return 0 if a component's source directory exists and has a Cargo.toml
+# Return 0 if a component's source directory exists and is buildable
 check_source() {
     local comp="$1"
     if [[ "$comp" == "homecore" ]]; then
         [[ -f "$HOMECORE_SRC/Cargo.toml" ]]
+    elif [[ "$comp" == "hc-web" ]]; then
+        [[ -f "$WEBUI_SRC/Trunk.toml" ]]
     else
         local dir="${PLUGIN_SRC_DIR[$comp]:-}"
         [[ -n "$dir" && -f "$dir/Cargo.toml" ]]
@@ -221,8 +223,9 @@ scaffold_homecore() {
     mkdir -p "$DEST/rules"
     mkdir -p "$DEST/data"
     mkdir -p "$DEST/logs"
+    mkdir -p "$DEST/ui/dist"
     mkdir -p "$DEST/scripts/service-templates"
-    info "bin/  config/  config/profiles/  rules/  data/  logs/  scripts/service-templates/"
+    info "bin/  config/  rules/  data/  logs/  ui/dist/  scripts/"
 
     # Copy scripts unconditionally — these are not credentials-bearing config files
     if [[ -d "$HOMECORE_SRC/scripts" ]]; then
@@ -262,10 +265,9 @@ build_component() {
     if [[ "$comp" == "homecore" ]]; then
         log "Building homecore ($RELEASE_DIR)"
         cargo build $RELEASE_FLAG --manifest-path "$HOMECORE_SRC/Cargo.toml"
-    elif [[ "$comp" == "hc-matter" ]]; then
-        local dir="${PLUGIN_SRC_DIR[$comp]}"
-        log "Building $comp ($RELEASE_DIR)"
-        cargo build $RELEASE_FLAG --features matter-stack --manifest-path "$dir/Cargo.toml"
+    elif [[ "$comp" == "hc-web" ]]; then
+        log "Building hc-web (trunk build --release)"
+        trunk build --release --config "$WEBUI_SRC/Trunk.toml"
     else
         local dir="${PLUGIN_SRC_DIR[$comp]}"
         log "Building $comp ($RELEASE_DIR)"
@@ -310,18 +312,21 @@ install_plugin_binary() {
     ok "plugins/$name/bin/$name"
 }
 
-install_matter_tooling() {
-    local dst="$DEST/plugins/hc-matter/bin/chip-tool"
+install_webui() {
+    local src_dist="$WEBUI_SRC/dist"
+    local dst_dist="$DEST/ui/dist"
 
-    if [[ ! -x "$CHIP_TOOL_STAGED" ]]; then
-        echo "ERROR: staged chip-tool missing: $CHIP_TOOL_STAGED" >&2
-        echo "       Run scripts/ensure-chip-tool.sh or set CHIP_TOOL_SOURCE" >&2
+    if [[ ! -d "$src_dist" ]]; then
+        echo "ERROR: hc-web dist not found: $src_dist" >&2
+        echo "       Run without --no-build, or run 'trunk build --release' first." >&2
         return 1
     fi
 
-    cp "$CHIP_TOOL_STAGED" "$dst"
-    chmod 755 "$dst"
-    ok "plugins/hc-matter/bin/chip-tool"
+    # Clean previous build and sync fresh assets
+    rm -rf "$dst_dist"
+    mkdir -p "$dst_dist"
+    cp -r "$src_dist/." "$dst_dist/"
+    ok "ui/dist/  ($(find "$dst_dist" -type f | wc -l) files)"
 }
 
 # ===========================================================================
@@ -396,6 +401,8 @@ for comp in "${COMPONENTS[@]}"; do
     if ! check_source "$comp"; then
         if [[ "$comp" == "homecore" ]]; then
             echo "ERROR: homecore source not found at $HOMECORE_SRC" >&2
+        elif [[ "$comp" == "hc-web" ]]; then
+            echo "ERROR: hc-web source not found at $WEBUI_SRC (missing Trunk.toml)" >&2
         else
             echo "ERROR: $comp source not found at ${PLUGIN_SRC_DIR[$comp]:-<unknown>}" >&2
         fi
@@ -404,15 +411,6 @@ for comp in "${COMPONENTS[@]}"; do
     info "found: $comp"
 done
 echo
-
-if [[ " ${COMPONENTS[*]} " == *" hc-matter "* ]]; then
-    log "Provisioning chip-tool for hc-matter"
-    if ! "$WORKSPACE_ROOT/scripts/ensure-chip-tool.sh"; then
-        echo "ERROR: chip-tool provisioning failed; cannot deploy hc-matter without commissioner binary" >&2
-        exit 1
-    fi
-    echo
-fi
 
 # ---------------------------------------------------------------------------
 # Build
@@ -430,6 +428,9 @@ fi
 for comp in "${COMPONENTS[@]}"; do
     if [[ "$comp" == "homecore" ]]; then
         scaffold_homecore
+    elif [[ "$comp" == "hc-web" ]]; then
+        # ui/dist/ is created by scaffold_homecore; ensure it exists standalone too
+        mkdir -p "$DEST/ui/dist"
     else
         scaffold_plugin "$comp"
     fi
@@ -443,11 +444,10 @@ log "Installing binaries"
 for comp in "${COMPONENTS[@]}"; do
     if [[ "$comp" == "homecore" ]]; then
         install_homecore_binary
+    elif [[ "$comp" == "hc-web" ]]; then
+        install_webui
     else
         install_plugin_binary "$comp"
-        if [[ "$comp" == "hc-matter" ]]; then
-            install_matter_tooling
-        fi
     fi
 done
 echo
@@ -459,6 +459,8 @@ if $SYNC_CONFIG; then
     for comp in "${COMPONENTS[@]}"; do
         if [[ "$comp" == "homecore" ]]; then
             sync_homecore_config
+        elif [[ "$comp" == "hc-web" ]]; then
+            : # no config to sync for web UI
         else
             sync_plugin_config "$comp"
         fi
@@ -478,6 +480,11 @@ if [[ ! -f "$DEST/config/homecore.toml" ]]; then
     echo
 fi
 
+echo "  To enable the web UI, set in homecore.toml:"
+echo "    [web_admin]"
+echo "    enabled   = true"
+echo "    dist_path = \"ui/dist\""
+echo
 echo "  Plugin binary paths in homecore.toml should be:"
 for name in "${PLUGINS[@]}"; do
     echo "    binary = \"plugins/$name/bin/$name\""
@@ -485,5 +492,5 @@ done
 echo
 echo "  Plugin config args in homecore.toml should be:"
 for name in "${PLUGINS[@]}"; do
-    echo "    args   = [\"plugins/$name/config/config.toml\"]"
+    echo "    config = \"plugins/$name/config/config.toml\""
 done
