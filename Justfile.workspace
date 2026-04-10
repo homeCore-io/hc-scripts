@@ -1,0 +1,104 @@
+# HomeCore workspace — CI orchestration
+#
+# Usage:
+#   just check            # fmt + clippy + test across core + all plugins
+#   just check-core       # core only
+#   just check-plugins    # all plugins
+#   just check-plugin hc-hue  # single plugin
+#   just fmt / clippy / test  # single step across everything
+#   just build            # debug build everything
+#   just build-release    # release build everything
+
+core_dir   := "core"
+plugin_dir := "plugins"
+
+plugins := "hc-caseta hc-ecowitt hc-hue hc-isy hc-lutron hc-sonos hc-wled hc-yolink hc-zwave"
+
+# ── Full CI ──────────────────────────────────────────────────────────────────
+
+# Run all CI checks across core and plugins
+check: check-core check-plugins
+
+# ── Core ─────────────────────────────────────────────────────────────────────
+
+# Run all checks on core
+check-core:
+    @echo "==> core: check"
+    just -f {{core_dir}}/Justfile check
+
+# ── Plugins ──────────────────────────────────────────────────────────────────
+
+# Run all checks on every plugin
+check-plugins:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    failed=()
+    for p in {{plugins}}; do
+        echo "==> $p: check"
+        if just -f {{plugin_dir}}/$p/Justfile check; then
+            echo "    [ok] $p"
+        else
+            echo "    [FAIL] $p"
+            failed+=("$p")
+        fi
+        echo
+    done
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        echo "==> FAILED: ${failed[*]}"
+        exit 1
+    fi
+    echo "==> All plugins passed"
+
+# Run checks on a single plugin
+check-plugin name:
+    @echo "==> {{name}}: check"
+    just -f {{plugin_dir}}/{{name}}/Justfile check
+
+# ── Individual steps (all repos) ─────────────────────────────────────────────
+
+# Check formatting everywhere
+fmt:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just -f {{core_dir}}/Justfile fmt
+    for p in {{plugins}}; do
+        just -f {{plugin_dir}}/$p/Justfile fmt
+    done
+
+# Run clippy everywhere
+clippy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just -f {{core_dir}}/Justfile clippy
+    for p in {{plugins}}; do
+        just -f {{plugin_dir}}/$p/Justfile clippy
+    done
+
+# Run tests everywhere
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just -f {{core_dir}}/Justfile test
+    for p in {{plugins}}; do
+        just -f {{plugin_dir}}/$p/Justfile test
+    done
+
+# ── Builds ───────────────────────────────────────────────────────────────────
+
+# Debug build everything
+build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just -f {{core_dir}}/Justfile build
+    for p in {{plugins}}; do
+        just -f {{plugin_dir}}/$p/Justfile build
+    done
+
+# Release build everything
+build-release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just -f {{core_dir}}/Justfile build-release
+    for p in {{plugins}}; do
+        just -f {{plugin_dir}}/$p/Justfile build-release
+    done
