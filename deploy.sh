@@ -103,6 +103,7 @@ PLUGINS=(
     hc-zwave
     hc-isy
     hc-ecowitt
+    hc-thermostat
 )
 
 declare -A PLUGIN_SRC_DIR=(
@@ -115,6 +116,7 @@ declare -A PLUGIN_SRC_DIR=(
     [hc-zwave]="$WORKSPACE_ROOT/plugins/hc-zwave"
     [hc-isy]="$WORKSPACE_ROOT/plugins/hc-isy"
     [hc-ecowitt]="$WORKSPACE_ROOT/plugins/hc-ecowitt"
+    [hc-thermostat]="$WORKSPACE_ROOT/plugins/hc-thermostat"
 )
 
 ALL_COMPONENTS=(homecore hc-web "${PLUGINS[@]}")
