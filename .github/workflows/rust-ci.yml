@@ -67,7 +67,23 @@ jobs:
 
       - name: cargo clippy
         if: ${{ inputs.run_clippy }}
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        # Three lints intentionally allowed at CI scope — see release_0_1_0
+        # plan. They are stylistic rather than bug-catching for our codebase
+        # and the fixes don't materially improve readability:
+        #   too_many_arguments  — aggregator constructors (e.g. AppState::new)
+        #   type_complexity     — concrete types like Arc<DashMap<…>> we want
+        #                         visible at the field rather than hidden behind
+        #                         an alias
+        #   result_large_err    — Result<T, axum::Response> from API handlers;
+        #                         boxing changes the calling convention
+        # Re-enable each as we get to it; do NOT add new entries here without
+        # discussing the trade-off.
+        run: |
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -A clippy::too_many_arguments \
+            -A clippy::type_complexity \
+            -A clippy::result_large_err
 
       - name: cargo test
         if: ${{ inputs.run_tests }}
