@@ -1,0 +1,69 @@
+# Reusable CI workflow for homeCore Rust components.
+#
+# Runs fmt + clippy + test on the calling repo. Each component (core,
+# plugin, hc-tui) wires its own .github/workflows/ci.yml that calls into
+# this one — fix the workflow here, every component picks it up.
+#
+# Caller example:
+#   # core/.github/workflows/ci.yml
+#   name: CI
+#   on:
+#     push:
+#       branches: [main, develop]
+#     pull_request:
+#       branches: [main]
+#   jobs:
+#     ci:
+#       uses: homeCore-io/hc-scripts/.github/workflows/rust-ci.yml@main
+#       with:
+#         rust_version: "1.88"
+
+name: rust-ci
+
+on:
+  workflow_call:
+    inputs:
+      rust_version:
+        description: 'Rust toolchain to use (matches rustup channel/version).'
+        required: false
+        default: '1.88'
+        type: string
+      run_clippy:
+        description: 'Run clippy with -D warnings.'
+        required: false
+        default: true
+        type: boolean
+      run_tests:
+        description: 'Run cargo test.'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  ci:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust ${{ inputs.rust_version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust_version }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        if: ${{ inputs.run_clippy }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        if: ${{ inputs.run_tests }}
+        run: cargo test --all-features

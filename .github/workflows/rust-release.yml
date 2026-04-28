@@ -1,0 +1,188 @@
+# Reusable release workflow for homeCore Rust components.
+#
+# Builds x86_64-unknown-linux-musl + aarch64-unknown-linux-musl statically
+# linked binaries, packages each into a tar.gz with config example +
+# README + any extra files, sha-256 sidecars, and uploads as Actions
+# artifacts. On a `v*` tag push, additionally creates a GitHub Release.
+#
+# `workflow_dispatch` triggers a build only — no Release is created.
+# This is what lets you validate the whole pipeline before tagging.
+#
+# Caller example:
+#   # core/.github/workflows/release.yml
+#   name: Release
+#   on:
+#     push:
+#       tags: ['v*']
+#     workflow_dispatch:
+#   jobs:
+#     release:
+#       uses: homeCore-io/hc-scripts/.github/workflows/rust-release.yml@main
+#       with:
+#         binary_name: homecore
+#         config_example: config/homecore.toml.example
+#         extra_files: |
+#           config/profiles
+#           rules/examples
+#           scripts/service-templates/homecore.service
+
+name: rust-release
+
+on:
+  workflow_call:
+    inputs:
+      binary_name:
+        description: 'Cargo binary target to build (also the archive prefix).'
+        required: true
+        type: string
+      config_example:
+        description: 'Path to config example file to include under config/ in the archive. Empty to skip.'
+        required: false
+        default: ''
+        type: string
+      extra_files:
+        description: 'Newline-separated list of additional paths (files or directories) to include at the archive root.'
+        required: false
+        default: ''
+        type: string
+      rust_version:
+        description: 'Rust toolchain version.'
+        required: false
+        default: '1.88'
+        type: string
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build matrix — runs on every workflow_dispatch and tag push.
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target:   x86_64-unknown-linux-musl
+            platform: linux-x86_64
+            arch:     amd64
+          - target:   aarch64-unknown-linux-musl
+            platform: linux-aarch64
+            arch:     arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/${{ matrix.arch }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.target }}-
+
+      - name: Build (${{ matrix.target }})
+        run: |
+          set -eux
+          # Build inside rust:alpine for the target arch — same toolchain
+          # as the appliance image, avoids host musl-gcc setup, and makes
+          # x86_64 + aarch64 use the same code path.
+          docker run --rm \
+            --platform linux/${{ matrix.arch }} \
+            -v "$PWD:/src" \
+            -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+            -w /src \
+            rust:${{ inputs.rust_version }}-alpine \
+            sh -c '
+              apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
+              cargo build --release --bin ${{ inputs.binary_name }}
+            '
+
+      - name: Assemble archive
+        id: package
+        run: |
+          set -eux
+          VERSION="${GITHUB_REF_NAME}"
+          # workflow_dispatch off main has ref_name=main; tag pushes have v*.
+          [ "${VERSION}" = "main" ] && VERSION="dev-$(git rev-parse --short HEAD)"
+
+          NAME="${{ inputs.binary_name }}-${VERSION}-${{ matrix.platform }}"
+          mkdir -p "${NAME}/bin"
+
+          # release/ contains both x86_64 and aarch64 build outputs since we
+          # built into the default target dir inside the container; the
+          # binary is the same regardless of arch (single per-build container).
+          cp "target/release/${{ inputs.binary_name }}" "${NAME}/bin/"
+          chmod +x "${NAME}/bin/${{ inputs.binary_name }}"
+
+          if [ -n "${{ inputs.config_example }}" ] && [ -f "${{ inputs.config_example }}" ]; then
+              mkdir -p "${NAME}/config"
+              cp "${{ inputs.config_example }}" "${NAME}/config/"
+          fi
+
+          if [ -f README.md ]; then
+              cp README.md "${NAME}/"
+          fi
+
+          # extra_files: one path per line; copy each (file or dir) to archive root
+          if [ -n "${{ inputs.extra_files }}" ]; then
+              while IFS= read -r entry; do
+                  [ -z "$entry" ] && continue
+                  if [ -e "$entry" ]; then
+                      cp -r "$entry" "${NAME}/"
+                  else
+                      echo "::warning::extra_files entry not found: $entry"
+                  fi
+              done <<EOF
+          ${{ inputs.extra_files }}
+          EOF
+          fi
+
+          tar -czf "${NAME}.tar.gz" "${NAME}"
+          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            ${{ steps.package.outputs.name }}.tar.gz
+            ${{ steps.package.outputs.name }}.tar.gz.sha256
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Release — only on tag push. workflow_dispatch builds artifacts and stops.
+  # ---------------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.tar.gz.sha256
