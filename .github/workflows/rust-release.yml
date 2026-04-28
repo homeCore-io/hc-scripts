@@ -55,6 +55,42 @@ on:
         required: false
         default: "stable"
         type: string
+      # ─── Docker image publishing (opt-in) ────────────────────────────────
+      publish_docker_image:
+        description: 'Publish a multi-arch image to ghcr.io after build. Caller release.yml must grant packages: write.'
+        required: false
+        default: false
+        type: boolean
+      image_name:
+        description: 'ghcr.io image name (defaults to binary_name). Used when binary and image want different names, e.g. binary "homecore" -> image "hc-core".'
+        required: false
+        default: ''
+        type: string
+      dockerfile_name:
+        description: 'Dockerfile to use from homeCore-io/docker (Dockerfile.plugin or Dockerfile.core).'
+        required: false
+        default: 'Dockerfile.plugin'
+        type: string
+      docker_repo_ref:
+        description: 'Branch/tag of homeCore-io/docker to fetch the Dockerfile + entrypoints from.'
+        required: false
+        default: 'main'
+        type: string
+      bundle_webui:
+        description: 'Clone webui_repo + run `trunk build --release` and bundle dist/ as ./ui/ in the docker context. hc-core only.'
+        required: false
+        default: false
+        type: boolean
+      webui_repo:
+        description: 'Repo to clone when bundle_webui=true (owner/name).'
+        required: false
+        default: 'homeCore-io/hc-web-leptos'
+        type: string
+      webui_ref:
+        description: 'Branch/tag of webui_repo to clone.'
+        required: false
+        default: 'main'
+        type: string
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -201,3 +237,164 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.tar.gz.sha256
+
+  # ---------------------------------------------------------------------------
+  # Docker — opt-in. Builds a multi-arch alpine image from the prebuilt
+  # musl binaries and pushes to ghcr.io/<owner>/<image_name>.
+  #
+  # Triggered on:
+  #   - tag push  -> tag is github.ref_name (e.g. v0.1.0)
+  #   - dispatch  -> tag is dev-<short_sha>  (lets us validate without tagging)
+  # ---------------------------------------------------------------------------
+  docker-publish:
+    name: Publish Docker image
+    needs: build
+    runs-on: ubuntu-latest
+    if: >-
+      inputs.publish_docker_image == true &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Resolve image name + tag
+        id: resolve
+        run: |
+          set -eux
+          IMAGE_NAME="${{ inputs.image_name }}"
+          [ -z "$IMAGE_NAME" ] && IMAGE_NAME="${{ inputs.binary_name }}"
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          if [ "${{ github.event_name }}" = "push" ]; then
+              TAG="${GITHUB_REF_NAME}"
+          else
+              TAG="dev-${GITHUB_SHA::7}"
+          fi
+          {
+              echo "image=ghcr.io/${OWNER}/${IMAGE_NAME}:${TAG}"
+              echo "image_name=${IMAGE_NAME}"
+              echo "tag=${TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+        with:
+          path: caller
+
+      - name: Checkout homeCore-io/docker
+        uses: actions/checkout@v4
+        with:
+          repository: homeCore-io/docker
+          ref: ${{ inputs.docker_repo_ref }}
+          path: docker-repo
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage build context
+        run: |
+          set -eux
+          mkdir -p build-context
+
+          # Extract per-arch binaries from each platform's tar.gz and
+          # rename to <binary>-<arch> for TARGETARCH selection in the
+          # Dockerfile.
+          for plat in linux-x86_64 linux-aarch64; do
+              tmpdir=$(mktemp -d)
+              tar -xzf artifacts/${plat}/*.tar.gz -C "$tmpdir"
+              BIN=$(find "$tmpdir" -type f -path "*/bin/${{ inputs.binary_name }}")
+              case "$plat" in
+                  linux-x86_64)  ARCH=amd64 ;;
+                  linux-aarch64) ARCH=arm64 ;;
+              esac
+              cp "$BIN" "build-context/${{ inputs.binary_name }}-${ARCH}"
+          done
+
+          # Dockerfile + matching entrypoint from homeCore-io/docker.
+          DOCKERFILE="${{ inputs.dockerfile_name }}"
+          cp "docker-repo/images/${DOCKERFILE}" build-context/Dockerfile
+          case "$DOCKERFILE" in
+              Dockerfile.core)
+                  cp docker-repo/images/entrypoint-core.sh build-context/
+                  ;;
+              Dockerfile.plugin)
+                  cp docker-repo/images/entrypoint-plugin.sh build-context/
+                  ;;
+              *)
+                  echo "::error::Unknown dockerfile_name: $DOCKERFILE"
+                  exit 1
+                  ;;
+          esac
+
+          # config.toml.example from caller repo.
+          if [ -n "${{ inputs.config_example }}" ] && \
+             [ -f "caller/${{ inputs.config_example }}" ]; then
+              cp "caller/${{ inputs.config_example }}" build-context/config.toml.example
+          else
+              # Required by the Dockerfile COPY; fail loudly rather than
+              # producing an image with no defaults.
+              echo "::error::config_example missing or not found: ${{ inputs.config_example }}"
+              exit 1
+          fi
+
+          ls -la build-context
+
+      - name: Install Rust + wasm32 (for trunk build)
+        if: inputs.bundle_webui == true
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install trunk (prebuilt)
+        if: inputs.bundle_webui == true
+        run: |
+          set -eux
+          TRUNK_VERSION=v0.21.7
+          curl -fsSL \
+              "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+              | sudo tar -xzf - -C /usr/local/bin trunk
+          trunk --version
+
+      - name: Build WASM UI bundle
+        if: inputs.bundle_webui == true
+        run: |
+          set -eux
+          git clone --depth 1 \
+              --branch "${{ inputs.webui_ref }}" \
+              "https://github.com/${{ inputs.webui_repo }}.git" \
+              webui
+          (cd webui && trunk build --release)
+          cp -r webui/dist build-context/ui
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./build-context
+          file: ./build-context/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BINARY_NAME=${{ inputs.binary_name }}
+          tags: ${{ steps.resolve.outputs.image }}
+          push: true
+
+      - name: Image summary
+        run: |
+          echo "Pushed: ${{ steps.resolve.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
