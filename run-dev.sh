@@ -9,6 +9,7 @@
 #
 # Options:
 #   --no-pull       Skip git pull in all repos (default: pull before building)
+#   --no-update     Skip 'cargo update' after pull (default: refresh Cargo.lock per component)
 #   --no-build      Skip all cargo builds; use existing binaries as-is
 #   --release       Build and run release binaries (default: debug)
 #   --webui         Build and serve hc-web-leptos (trunk serve) alongside homecore
@@ -21,6 +22,7 @@ WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOMECORE_SRC="$WORKSPACE_ROOT/core"
 CONFIG="config/homecore.dev.toml"
 PULL=true
+UPDATE=true
 BUILD=true
 WEBUI=false
 PROFILE="debug"
@@ -29,10 +31,11 @@ WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web-leptos"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --no-pull)  PULL=false; shift ;;
-        --no-build) BUILD=false; shift ;;
-        --release)  PROFILE="release"; CARGO_FLAG="--release"; shift ;;
-        --webui)    WEBUI=true; shift ;;
+        --no-pull)   PULL=false; shift ;;
+        --no-update) UPDATE=false; shift ;;
+        --no-build)  BUILD=false; shift ;;
+        --release)   PROFILE="release"; CARGO_FLAG="--release"; shift ;;
+        --webui)     WEBUI=true; shift ;;
         --help|-h)
             sed -n '2,/^set /p' "$0" | grep -E '^#' | sed 's/^# \?//'
             exit 0
@@ -95,6 +98,35 @@ if $PULL; then
             echo "ok"
         else
             echo "WARN: pull failed (offline or dirty?) — continuing with local state" >&2
+        fi
+    done
+    echo
+fi
+
+# ---------------------------------------------------------------------------
+# Refresh phase — bump each component's Cargo.lock to the latest semver-
+# compatible deps. Counters the lockfile churn that `[patch]` overrides
+# can otherwise cause on every cargo invocation (which trips trunk's
+# file watcher into a rebuild loop).
+#
+# Skipped if --no-update or --no-pull (no point if source didn't move).
+# ---------------------------------------------------------------------------
+
+if $PULL && $UPDATE; then
+    UPDATE_DIRS=("$HOMECORE_SRC")
+    for dir in "${SDK_DIRS[@]}" "${PLUGIN_DIRS[@]}" "${CLIENT_DIRS[@]}"; do
+        [[ -f "${dir}Cargo.toml" ]] && UPDATE_DIRS+=("$dir")
+    done
+
+    echo "==> cargo update across ${#UPDATE_DIRS[@]} components"
+    echo
+    for dir in "${UPDATE_DIRS[@]}"; do
+        name="$(basename "$dir")"
+        printf "    %-25s  " "$name"
+        if cargo update --quiet --manifest-path "${dir}Cargo.toml" 2>/dev/null; then
+            echo "ok"
+        else
+            echo "WARN: cargo update failed (offline or registry blip?)" >&2
         fi
     done
     echo
