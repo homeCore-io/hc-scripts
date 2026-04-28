@@ -224,7 +224,11 @@ trap cleanup EXIT INT TERM
 
 if $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]]; then
     echo "==> Starting trunk serve (hc-web-leptos :3000)"
-    trunk serve --config "$WEBUI_DIR/Trunk.toml" &
+    # --ignore Cargo.lock: wasm32 builds with [patch] overrides cause
+    # cargo to re-resolve and touch Cargo.lock on every build. Without
+    # this ignore, trunk's file watcher sees the touch and triggers an
+    # immediate rebuild → infinite loop.
+    trunk serve --config "$WEBUI_DIR/Trunk.toml" --ignore "$WEBUI_DIR/Cargo.lock" &
     TRUNK_PID=$!
     echo "    pid: $TRUNK_PID"
     echo
