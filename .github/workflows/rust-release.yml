@@ -48,7 +48,7 @@ on:
       rust_version:
         description: 'Rust toolchain version.'
         required: false
-        default: '1.88'
+        default: "stable"
         type: string
 
 jobs:

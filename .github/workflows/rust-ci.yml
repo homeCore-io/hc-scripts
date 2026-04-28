@@ -26,7 +26,7 @@ on:
       rust_version:
         description: 'Rust toolchain to use (matches rustup channel/version).'
         required: false
-        default: '1.88'
+        default: "stable"
         type: string
       run_clippy:
         description: 'Run clippy with -D warnings.'
