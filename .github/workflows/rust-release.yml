@@ -28,6 +28,11 @@
 
 name: rust-release
 
+# Opt JavaScript actions into Node.js 24 (default-on after 2026-06-02).
+# Removes the deprecation banner from current runs.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   workflow_call:
     inputs:
