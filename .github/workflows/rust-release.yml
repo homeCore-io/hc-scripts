@@ -91,6 +91,15 @@ on:
         required: false
         default: 'main'
         type: string
+      fast:
+        description: >-
+          Skip the aarch64 build (matrix + docker-publish platforms) to halve
+          runtime. Defaults to false so tag pushes always get full multi-arch.
+          Pass true on workflow_dispatch for fast pre-release iteration —
+          published images will be amd64-only until the next non-fast run.
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -101,14 +110,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Conditional matrix — fast=true drops the aarch64 entry. Multiline
+      # YAML expression so the JSON literals stay readable.
       matrix:
-        include:
-          - target:   x86_64-unknown-linux-musl
-            platform: linux-x86_64
-            arch:     amd64
-          - target:   aarch64-unknown-linux-musl
-            platform: linux-aarch64
-            arch:     arm64
+        include: >-
+          ${{
+            inputs.fast
+            && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"}]')
+            || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64","arch":"arm64"}]')
+          }}
 
     steps:
       - name: Checkout
@@ -369,7 +379,11 @@ jobs:
           (cd webui && trunk build --release)
           cp -r webui/dist build-context/ui
 
+      # QEMU is only needed for cross-arch emulation. Skip it entirely
+      # when fast=true so the runner doesn't spend ~30s installing
+      # binfmt handlers it won't use.
       - name: Set up QEMU
+        if: ${{ !inputs.fast }}
         uses: docker/setup-qemu-action@v3
         with:
           platforms: linux/amd64,linux/arm64
@@ -389,7 +403,7 @@ jobs:
         with:
           context: ./build-context
           file: ./build-context/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ inputs.fast && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           build-args: |
             BINARY_NAME=${{ inputs.binary_name }}
           tags: ${{ steps.resolve.outputs.image }}
