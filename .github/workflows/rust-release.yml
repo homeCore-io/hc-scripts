@@ -311,8 +311,14 @@ jobs:
 
           # Extract per-arch binaries from each platform's tar.gz and
           # rename to <binary>-<arch> for TARGETARCH selection in the
-          # Dockerfile.
+          # Dockerfile. Loop is resilient to either-or — when fast=true
+          # only linux-x86_64 was built, so skip platforms whose
+          # artifact dir is missing rather than failing on tar.
           for plat in linux-x86_64 linux-aarch64; do
+              if [ ! -d "artifacts/${plat}" ]; then
+                  echo "::notice::skipping ${plat} (no artifact uploaded — fast build)"
+                  continue
+              fi
               tmpdir=$(mktemp -d)
               tar -xzf artifacts/${plat}/*.tar.gz -C "$tmpdir"
               BIN=$(find "$tmpdir" -type f -path "*/bin/${{ inputs.binary_name }}")
