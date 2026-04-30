@@ -104,24 +104,24 @@ if $PULL; then
 fi
 
 # ---------------------------------------------------------------------------
-# Refresh phase — bump each component's Cargo.lock to the latest semver-
-# compatible deps. Counters the lockfile churn that `[patch]` overrides
-# can otherwise cause on every cargo invocation (which trips trunk's
-# file watcher into a rebuild loop).
+# Refresh phase — bump each workspace's Cargo.lock to the latest
+# semver-compatible deps. With the meta-layout per-category workspaces
+# (plugins/, clients/, sdks/) there are now four lockfiles, not one
+# per component. core/ is its own internal workspace.
 #
 # Skipped if --no-update or --no-pull (no point if source didn't move).
 # ---------------------------------------------------------------------------
 
 if $PULL && $UPDATE; then
     UPDATE_DIRS=("$HOMECORE_SRC")
-    for dir in "${SDK_DIRS[@]}" "${PLUGIN_DIRS[@]}" "${CLIENT_DIRS[@]}"; do
-        [[ -f "${dir}Cargo.toml" ]] && UPDATE_DIRS+=("$dir")
+    for sub in plugins clients sdks; do
+        [[ -f "$WORKSPACE_ROOT/$sub/Cargo.toml" ]] && UPDATE_DIRS+=("$WORKSPACE_ROOT/$sub/")
     done
 
-    echo "==> cargo update across ${#UPDATE_DIRS[@]} components"
+    echo "==> cargo update across ${#UPDATE_DIRS[@]} workspaces"
     echo
     for dir in "${UPDATE_DIRS[@]}"; do
-        name="$(basename "$dir")"
+        name="$(basename "${dir%/}")"
         printf "    %-25s  " "$name"
         if cargo update --quiet --manifest-path "${dir}Cargo.toml" 2>/dev/null; then
             echo "ok"
@@ -138,21 +138,35 @@ fi
 
 if $BUILD; then
     WEBUI_COUNT=0; $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]] && WEBUI_COUNT=1
+    PLUGINS_WS="$WORKSPACE_ROOT/plugins/Cargo.toml"
+    USE_PLUGIN_WS=false
+    [[ -f "$PLUGINS_WS" ]] && USE_PLUGIN_WS=true
     TOTAL=$(( ${#PLUGIN_DIRS[@]} + 1 + WEBUI_COUNT ))   # plugins + homecore + webui
     FAILED=()
     STEP=0
 
     echo "==> Building $TOTAL Rust crates ($PROFILE)"
+    if $USE_PLUGIN_WS; then
+        echo "    (plugins via meta-layout workspace at $PLUGINS_WS)"
+    fi
     echo
 
-    # Build each hc-* plugin repo. A plugin build failure warns but does not
-    # abort — homecore can still start with a stale binary for that plugin.
+    # Build each hc-* plugin. With the meta-layout workspace at
+    # plugins/, we route every plugin build through a single workspace
+    # manifest so they share one Cargo.lock and the per-repo Cargo.lock
+    # files stay quiescent. Per-package failure still only warns —
+    # homecore can start with a stale binary for that plugin.
     for dir in "${PLUGIN_DIRS[@]}"; do
         name="$(basename "$dir")"
         STEP=$(( STEP + 1 ))
         echo "[$STEP/$TOTAL] $name"
 
-        if cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "${dir}Cargo.toml" 2>&1; then
+        if $USE_PLUGIN_WS; then
+            BUILD_CMD=(cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "$PLUGINS_WS" -p "$name")
+        else
+            BUILD_CMD=(cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "${dir}Cargo.toml")
+        fi
+        if "${BUILD_CMD[@]}" 2>&1; then
             echo "  ok"
         else
             echo "  WARN: $name build failed — stale binary will be used" >&2
@@ -224,11 +238,15 @@ trap cleanup EXIT INT TERM
 
 if $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]]; then
     echo "==> Starting trunk serve (hc-web-leptos :3000)"
-    # --ignore Cargo.lock: wasm32 builds with [patch] overrides cause
-    # cargo to re-resolve and touch Cargo.lock on every build. Without
-    # this ignore, trunk's file watcher sees the touch and triggers an
-    # immediate rebuild → infinite loop.
-    trunk serve --config "$WEBUI_DIR/Trunk.toml" --ignore "$WEBUI_DIR/Cargo.lock" &
+    # --ignore Cargo.lock entries: with the per-category workspace
+    # layout the active lockfile is at clients/Cargo.lock; the
+    # per-repo hc-web-leptos/Cargo.lock is now quiescent. Ignoring
+    # both is belt-and-braces against the trunk-watcher rebuild
+    # loop seen pre-workspace.
+    CLIENTS_WS="$WORKSPACE_ROOT/clients"
+    TRUNK_IGNORES=(--ignore "$WEBUI_DIR/Cargo.lock")
+    [[ -f "$CLIENTS_WS/Cargo.lock" ]] && TRUNK_IGNORES+=(--ignore "$CLIENTS_WS/Cargo.lock")
+    trunk serve --config "$WEBUI_DIR/Trunk.toml" "${TRUNK_IGNORES[@]}" &
     TRUNK_PID=$!
     echo "    pid: $TRUNK_PID"
     echo
