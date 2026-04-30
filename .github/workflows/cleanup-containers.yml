@@ -1,38 +1,26 @@
 name: Cleanup container versions
 
-# Prune old ghcr.io container versions for the homeCore-io org.
-# Runs weekly Sunday 09:00 UTC; can also be triggered manually with
-# `dry_run: true` to print the deletion plan without executing.
+# Prune old ghcr.io container versions for the homeCore-io org. Runs
+# weekly Sunday 09:00 UTC. Each package is pruned in parallel.
 #
-# Retention policy (per package):
-#   KEEP   v* tags (release pins) and `latest` forever
-#   KEEP   the 3 newest dev-* versions (sorted by created_at)
-#   DELETE dev-* versions older than 14 days outside the keep-3 window
-#   DELETE untagged orphan digests
+# Retention (per package):
+#   KEEP forever : versions tagged `v*` (release pins) or `latest`
+#   KEEP         : the 5 most recent versions outside that protection
+#   DELETE       : untagged orphan digests
+#   DELETE       : older versions outside the keep-5 window
 #
-# Hard cap: 50 deletions per run (kill-switch against mis-classification).
+# `min-versions-to-keep: 5` is itself the kill-switch — even if the
+# regex misclassifies, the action will refuse to leave a package with
+# fewer than 5 versions.
+#
+# Auth: needs PACKAGES_PAT (classic, scopes: read:packages,
+# delete:packages, read:org). The default GITHUB_TOKEN cannot manage
+# packages owned by other repos in the org, so a PAT is required.
 
 on:
   schedule:
-    - cron: "0 9 * * 0"   # Sunday 09:00 UTC = 5am EDT / 4am EST
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Print the deletion plan without deleting"
-        type: boolean
-        default: false
-      keep_dev:
-        description: "Number of newest dev-* versions to keep per package"
-        type: string
-        default: "3"
-      max_age_days:
-        description: "Delete dev-* versions older than this many days"
-        type: string
-        default: "14"
-      max_deletions:
-        description: "Hard cap on deletions per run"
-        type: string
-        default: "50"
+    - cron: "0 9 * * 0"   # Sunday 09:00 UTC = 5 AM EDT / 4 AM EST
+  workflow_dispatch: {}
 
 permissions:
   packages: write
@@ -44,158 +32,39 @@ concurrency:
 jobs:
   prune:
     runs-on: ubuntu-latest
-    env:
-      ORG: homeCore-io
-      KEEP_DEV: ${{ inputs.keep_dev || '3' }}
-      MAX_AGE_DAYS: ${{ inputs.max_age_days || '14' }}
-      MAX_DELETIONS: ${{ inputs.max_deletions || '50' }}
-      DRY_RUN: ${{ inputs.dry_run || 'false' }}
-      # PACKAGES_PAT must be a PAT with `read:packages`, `delete:packages`,
-      # `read:org` scopes. The workflow's auto-issued GITHUB_TOKEN can only
-      # manage packages owned by THIS repo, so it can't list / delete the
-      # ghcr.io images built by other repos in the org. Fall back to it
-      # only so the auth-check step can produce a clear error message.
-      GH_TOKEN: ${{ secrets.PACKAGES_PAT || secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - hc-core
+          - hc-hue
+          - hc-yolink
+          - hc-lutron
+          - hc-caseta
+          - hc-sonos
+          - hc-ecowitt
+          - hc-zwave
+          - hc-isy
+          - hc-wled
+          - hc-thermostat
     steps:
-      - name: Show config
-        run: |
-          echo "ORG=$ORG"
-          echo "KEEP_DEV=$KEEP_DEV"
-          echo "MAX_AGE_DAYS=$MAX_AGE_DAYS"
-          echo "MAX_DELETIONS=$MAX_DELETIONS"
-          echo "DRY_RUN=$DRY_RUN"
-          if [ -z "${{ secrets.PACKAGES_PAT }}" ]; then
-            echo "::warning::secrets.PACKAGES_PAT not set — falling back to GITHUB_TOKEN, which cannot manage other repos' packages. The list step below will fail."
-          fi
+      - name: Delete untagged orphans
+        uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          owner: homeCore-io
+          package-name: ${{ matrix.package }}
+          package-type: container
+          delete-only-untagged-versions: 'true'
+          token: ${{ secrets.PACKAGES_PAT }}
 
-      - name: List container packages
-        id: list
-        run: |
-          set -euo pipefail
-          # Use -f for query params so gh builds the URL safely; mixing
-          # `?...&...` with --paginate produces 400s in some gh versions
-          # because gh appends its own &page=N to an already-querystringed
-          # path.
-          gh api "/orgs/$ORG/packages" \
-            -f package_type=container \
-            -f per_page=100 \
-            --paginate \
-            --jq '.[].name' > packages.txt || {
-              status=$?
-              echo "::error::Failed to list packages. Check that secrets.PACKAGES_PAT is set with read:packages, delete:packages, read:org scopes."
-              echo "::error::Add the secret at: https://github.com/$ORG/hc-scripts/settings/secrets/actions"
-              exit $status
-            }
-          echo "Found $(wc -l < packages.txt) container package(s):"
-          cat packages.txt
-          echo "count=$(wc -l < packages.txt)" >> "$GITHUB_OUTPUT"
-
-      - name: Build deletion plan
-        run: |
-          set -euo pipefail
-          : > to_delete.txt
-          : > kept.txt
-          cutoff_epoch=$(date -u -d "$MAX_AGE_DAYS days ago" +%s)
-
-          while read -r pkg; do
-            [ -z "$pkg" ] && continue
-            echo
-            echo "=== $pkg ==="
-
-            # Fetch all versions: id, created_at (epoch), tags as space-joined string.
-            # Sorted newest-first so the keep-N window is the head of the list.
-            gh api "/orgs/$ORG/packages/container/$pkg/versions" \
-              -f per_page=100 \
-              --paginate \
-              --jq '.[] | {id, created_at, tags: (.metadata.container.tags // [])}' \
-              | jq -s 'sort_by(.created_at) | reverse' \
-              > "versions_${pkg}.json"
-
-            kept_dev=0
-            while read -r line; do
-              id=$(echo "$line" | jq -r '.id')
-              created=$(echo "$line" | jq -r '.created_at')
-              tags_csv=$(echo "$line" | jq -r '.tags | join(",")')
-              created_epoch=$(date -u -d "$created" +%s)
-              age_days=$(( ( $(date -u +%s) - created_epoch ) / 86400 ))
-
-              # Decision tree
-              decision="UNKNOWN"
-              if echo "$tags_csv" | grep -qE '(^|,)v[0-9]'; then
-                decision="KEEP_VERSION_TAG"
-              elif echo "$tags_csv" | grep -qE '(^|,)latest($|,)'; then
-                decision="KEEP_LATEST"
-              elif echo "$tags_csv" | grep -qE '(^|,)dev-'; then
-                if [ "$kept_dev" -lt "$KEEP_DEV" ]; then
-                  decision="KEEP_RECENT_DEV"
-                  kept_dev=$(( kept_dev + 1 ))
-                elif [ "$created_epoch" -lt "$cutoff_epoch" ]; then
-                  decision="DELETE_OLD_DEV"
-                else
-                  decision="KEEP_DEV_UNDER_AGE"
-                fi
-              elif [ -z "$tags_csv" ]; then
-                decision="DELETE_UNTAGGED"
-              else
-                # Unknown tag pattern — keep, log so we can refine later.
-                decision="KEEP_UNKNOWN_TAG"
-              fi
-
-              line_out="$pkg|$id|$created|${age_days}d|$decision|[$tags_csv]"
-              if [[ "$decision" == DELETE_* ]]; then
-                echo "$line_out" | tee -a to_delete.txt
-              else
-                echo "$line_out" | tee -a kept.txt
-              fi
-            done < <(jq -c '.[]' "versions_${pkg}.json")
-            rm -f "versions_${pkg}.json"
-          done < packages.txt
-
-          echo
-          echo "─── Plan summary ───"
-          kept_total=$(wc -l < kept.txt | tr -d ' ')
-          delete_total=$(wc -l < to_delete.txt | tr -d ' ')
-          echo "kept    : $kept_total"
-          echo "delete  : $delete_total"
-          if [ "$delete_total" -gt "$MAX_DELETIONS" ]; then
-            echo "::warning::Plan exceeds MAX_DELETIONS=$MAX_DELETIONS — truncating to oldest $MAX_DELETIONS"
-            sort -t '|' -k 3 to_delete.txt | head -n "$MAX_DELETIONS" > to_delete.trimmed
-            mv to_delete.trimmed to_delete.txt
-          fi
-
-      - name: Execute deletions
-        if: ${{ env.DRY_RUN != 'true' }}
-        run: |
-          set -euo pipefail
-          deleted=0
-          errors=0
-          while IFS='|' read -r pkg id created age decision tags; do
-            [ -z "$pkg" ] && continue
-            echo "DELETE  $pkg  id=$id  age=$age  $tags"
-            if gh api -X DELETE "/orgs/$ORG/packages/container/$pkg/versions/$id" 2>err.log; then
-              deleted=$(( deleted + 1 ))
-            else
-              status=$?
-              # Treat 404 (already gone) as success.
-              if grep -q "404" err.log; then
-                echo "  already gone (404) — counting as deleted"
-                deleted=$(( deleted + 1 ))
-              else
-                echo "::warning::failed to delete $pkg/$id ($(cat err.log))"
-                errors=$(( errors + 1 ))
-              fi
-            fi
-            sleep 0.5  # avoid secondary rate limits
-          done < to_delete.txt
-
-          echo
-          echo "─── Done ───"
-          echo "deleted=$deleted  errors=$errors"
-          if [ "$errors" -gt 0 ]; then
-            exit 1
-          fi
-
-      - name: Dry-run notice
-        if: ${{ env.DRY_RUN == 'true' }}
-        run: |
-          echo "DRY_RUN=true — no deletions executed. See plan above."
+      - name: Keep 5 most recent, protect v* and latest
+        uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          owner: homeCore-io
+          package-name: ${{ matrix.package }}
+          package-type: container
+          min-versions-to-keep: 5
+          ignore-versions: '^(v\d|latest)'
+          token: ${{ secrets.PACKAGES_PAT }}
