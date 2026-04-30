@@ -287,8 +287,7 @@ jobs:
               # latest dispatched build"; pull :dev-<sha> for
               # reproducibility. Tag pushes never touch :dev.
               TAG="dev-${GITHUB_SHA::7}"
-              TAGS="${BASE}:${TAG}
-${BASE}:dev"
+              TAGS=$(printf '%s\n%s' "${BASE}:${TAG}" "${BASE}:dev")
           fi
           {
               echo "image=${BASE}:${TAG}"
