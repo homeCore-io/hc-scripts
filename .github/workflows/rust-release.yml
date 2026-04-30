@@ -269,22 +269,34 @@ jobs:
       packages: write
 
     steps:
-      - name: Resolve image name + tag
+      - name: Resolve image name + tag(s)
         id: resolve
         run: |
           set -eux
           IMAGE_NAME="${{ inputs.image_name }}"
           [ -z "$IMAGE_NAME" ] && IMAGE_NAME="${{ inputs.binary_name }}"
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          BASE="ghcr.io/${OWNER}/${IMAGE_NAME}"
           if [ "${{ github.event_name }}" = "push" ]; then
+              # Tag push (release): single immutable version tag.
               TAG="${GITHUB_REF_NAME}"
+              TAGS="${BASE}:${TAG}"
           else
+              # workflow_dispatch: emit BOTH the immutable dev-<sha>
+              # tag and the rolling :dev tag. Pull :dev for "always
+              # latest dispatched build"; pull :dev-<sha> for
+              # reproducibility. Tag pushes never touch :dev.
               TAG="dev-${GITHUB_SHA::7}"
+              TAGS="${BASE}:${TAG}
+${BASE}:dev"
           fi
           {
-              echo "image=ghcr.io/${OWNER}/${IMAGE_NAME}:${TAG}"
+              echo "image=${BASE}:${TAG}"
               echo "image_name=${IMAGE_NAME}"
               echo "tag=${TAG}"
+              echo "tags<<EOTAGS"
+              echo "${TAGS}"
+              echo "EOTAGS"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout calling repo
@@ -412,9 +424,14 @@ jobs:
           platforms: ${{ inputs.fast && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           build-args: |
             BINARY_NAME=${{ inputs.binary_name }}
-          tags: ${{ steps.resolve.outputs.image }}
+          tags: ${{ steps.resolve.outputs.tags }}
           push: true
 
       - name: Image summary
         run: |
-          echo "Pushed: ${{ steps.resolve.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Pushed:"
+            echo '```'
+            echo "${{ steps.resolve.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
