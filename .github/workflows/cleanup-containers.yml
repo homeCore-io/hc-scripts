@@ -50,7 +50,12 @@ jobs:
       MAX_AGE_DAYS: ${{ inputs.max_age_days || '14' }}
       MAX_DELETIONS: ${{ inputs.max_deletions || '50' }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # PACKAGES_PAT must be a PAT with `read:packages`, `delete:packages`,
+      # `read:org` scopes. The workflow's auto-issued GITHUB_TOKEN can only
+      # manage packages owned by THIS repo, so it can't list / delete the
+      # ghcr.io images built by other repos in the org. Fall back to it
+      # only so the auth-check step can produce a clear error message.
+      GH_TOKEN: ${{ secrets.PACKAGES_PAT || secrets.GITHUB_TOKEN }}
     steps:
       - name: Show config
         run: |
@@ -59,13 +64,28 @@ jobs:
           echo "MAX_AGE_DAYS=$MAX_AGE_DAYS"
           echo "MAX_DELETIONS=$MAX_DELETIONS"
           echo "DRY_RUN=$DRY_RUN"
+          if [ -z "${{ secrets.PACKAGES_PAT }}" ]; then
+            echo "::warning::secrets.PACKAGES_PAT not set — falling back to GITHUB_TOKEN, which cannot manage other repos' packages. The list step below will fail."
+          fi
 
       - name: List container packages
         id: list
         run: |
           set -euo pipefail
-          gh api "/orgs/$ORG/packages?package_type=container&per_page=100" --paginate \
-            --jq '.[].name' > packages.txt
+          # Use -f for query params so gh builds the URL safely; mixing
+          # `?...&...` with --paginate produces 400s in some gh versions
+          # because gh appends its own &page=N to an already-querystringed
+          # path.
+          gh api "/orgs/$ORG/packages" \
+            -f package_type=container \
+            -f per_page=100 \
+            --paginate \
+            --jq '.[].name' > packages.txt || {
+              status=$?
+              echo "::error::Failed to list packages. Check that secrets.PACKAGES_PAT is set with read:packages, delete:packages, read:org scopes."
+              echo "::error::Add the secret at: https://github.com/$ORG/hc-scripts/settings/secrets/actions"
+              exit $status
+            }
           echo "Found $(wc -l < packages.txt) container package(s):"
           cat packages.txt
           echo "count=$(wc -l < packages.txt)" >> "$GITHUB_OUTPUT"
@@ -84,7 +104,9 @@ jobs:
 
             # Fetch all versions: id, created_at (epoch), tags as space-joined string.
             # Sorted newest-first so the keep-N window is the head of the list.
-            gh api "/orgs/$ORG/packages/container/$pkg/versions?per_page=100" --paginate \
+            gh api "/orgs/$ORG/packages/container/$pkg/versions" \
+              -f per_page=100 \
+              --paginate \
               --jq '.[] | {id, created_at, tags: (.metadata.container.tags // [])}' \
               | jq -s 'sort_by(.created_at) | reverse' \
               > "versions_${pkg}.json"
