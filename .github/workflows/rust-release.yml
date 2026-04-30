@@ -263,7 +263,11 @@ jobs:
     if: >-
       inputs.publish_docker_image == true &&
       (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+       github.event_name == 'repository_dispatch' ||
+       (github.event_name == 'push' && (
+         startsWith(github.ref, 'refs/tags/v') ||
+         github.ref == 'refs/heads/develop'
+       )))
     permissions:
       contents: read
       packages: write
@@ -277,15 +281,17 @@ jobs:
           [ -z "$IMAGE_NAME" ] && IMAGE_NAME="${{ inputs.binary_name }}"
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           BASE="ghcr.io/${OWNER}/${IMAGE_NAME}"
-          if [ "${{ github.event_name }}" = "push" ]; then
-              # Tag push (release): single immutable version tag.
+          # Tag pushes (refs/tags/v*) get a single immutable version tag.
+          # Everything else — develop branch push, workflow_dispatch,
+          # repository_dispatch — gets BOTH the immutable dev-<sha>
+          # tag (for reproducibility) and the rolling :dev tag
+          # (for "always pull newest dispatched"). main pushes don't
+          # reach this job (gated above) since main is just a release-
+          # marker FF target.
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
               TAG="${GITHUB_REF_NAME}"
               TAGS="${BASE}:${TAG}"
           else
-              # workflow_dispatch: emit BOTH the immutable dev-<sha>
-              # tag and the rolling :dev tag. Pull :dev for "always
-              # latest dispatched build"; pull :dev-<sha> for
-              # reproducibility. Tag pushes never touch :dev.
               TAG="dev-${GITHUB_SHA::7}"
               TAGS=$(printf '%s\n%s' "${BASE}:${TAG}" "${BASE}:dev")
           fi
