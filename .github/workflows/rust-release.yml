@@ -185,13 +185,14 @@ jobs:
       fail-fast: false
       # Conditional matrix — fast=true drops the aarch64 entry. Multiline
       # YAML expression so the JSON literals stay readable.
+      # FORCE_FAST: `true &&` forces single-arch; revert to `inputs.fast`.
       matrix:
         include: >-
           ${{
             true
             && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"}]')
             || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64","arch":"arm64"}]')
-          }}     # FORCE_FAST: revert `true` → `inputs.fast`
+          }}
 
     steps:
       - name: Checkout
@@ -328,13 +329,14 @@ jobs:
       startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
+      # FORCE_FAST: `true &&` forces single-arch; revert to `inputs.fast`.
       matrix:
         include: >-
           ${{
             true
             && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"}]')
             || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64"}]')
-          }}     # FORCE_FAST: revert `true` → `inputs.fast`
+          }}
 
     steps:
       - name: Checkout caller
@@ -598,8 +600,9 @@ jobs:
       # QEMU is only needed for cross-arch emulation. Skip it entirely
       # when fast=true so the runner doesn't spend ~30s installing
       # binfmt handlers it won't use.
+      # FORCE_FAST: `if: false` skips QEMU; revert to `!inputs.fast`.
       - name: Set up QEMU
-        if: ${{ false }}     # FORCE_FAST: revert `false` → `!inputs.fast`
+        if: ${{ false }}
         uses: docker/setup-qemu-action@v3
         with:
           platforms: linux/amd64,linux/arm64
@@ -619,7 +622,8 @@ jobs:
         with:
           context: ./build-context
           file: ./build-context/Dockerfile
-          platforms: ${{ true && 'linux/amd64' || 'linux/amd64,linux/arm64' }}     # FORCE_FAST: revert `true` → `inputs.fast`
+          # FORCE_FAST: `true &&` forces amd64-only; revert to `inputs.fast`.
+          platforms: ${{ true && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           build-args: |
             BINARY_NAME=${{ inputs.binary_name }}
           tags: ${{ steps.resolve.outputs.tags }}
