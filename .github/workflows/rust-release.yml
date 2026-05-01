@@ -121,10 +121,60 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # WebUI build — runs once when bundle_webui=true. Produces a single
+  # webui-dist artifact consumed by the build matrix, appliance job, and
+  # docker-publish. Trunk-built WASM is platform-independent so one
+  # build serves every arch.
+  # ---------------------------------------------------------------------------
+  webui-build:
+    name: WebUI build
+    runs-on: ubuntu-latest
+    if: inputs.bundle_webui == true
+    steps:
+      - name: Clone webui repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.webui_repo }}
+          ref: ${{ inputs.webui_ref }}
+          path: webui
+
+      - name: Install Rust + wasm32
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install trunk (prebuilt)
+        run: |
+          set -eux
+          TRUNK_VERSION=v0.21.7
+          curl -fsSL \
+              "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+              | sudo tar -xzf - -C /usr/local/bin trunk
+          trunk --version
+
+      - name: Build (release)
+        working-directory: webui
+        run: trunk build --release
+
+      - name: Upload webui-dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Build matrix — runs on every workflow_dispatch and tag push.
   # ---------------------------------------------------------------------------
   build:
     name: ${{ matrix.platform }}
+    needs: webui-build
+    # webui-build is skipped when bundle_webui=false (plugin builds);
+    # `always() && (success || skipped)` keeps the build job alive in
+    # both cases.
+    if: |
+      always() &&
+      (needs.webui-build.result == 'success' || needs.webui-build.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -202,6 +252,13 @@ jobs:
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Download webui-dist
+        if: inputs.bundle_webui == true
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: webui-dist
+
       - name: Assemble archive
         id: package
         run: |
@@ -223,17 +280,18 @@ jobs:
               KIND_ARGS="--kind plugin --name ${{ inputs.binary_name }}"
           fi
 
-          # NOTE: bundle_webui is currently only consumed by the
-          # docker-publish job. The archive here ships without the
-          # WASM bundle. Bundling into the archive can be added later
-          # via a parallel webui-build job that produces an artifact
-          # both this step and docker-publish download.
+          UI_DIST_ARG=""
+          if [ "${{ inputs.bundle_webui }}" = "true" ] && [ -d webui-dist ]; then
+              UI_DIST_ARG="--ui-dist webui-dist"
+          fi
+
           .hc-scripts/build-archive.sh \
               $KIND_ARGS \
               --target "${{ matrix.target }}" \
               --version "${{ steps.ver.outputs.version }}" \
               --source "$PWD" \
               --bin "$BIN_PATH" \
+              $UI_DIST_ARG \
               --out dist
 
           # Capture the produced archive path for the upload step.
@@ -324,15 +382,28 @@ jobs:
           EOF
           ls -la plugin-fragments
 
+      - name: Download webui-dist
+        if: inputs.bundle_webui == true
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: webui-dist
+
       - name: Assemble appliance archive
         run: |
           set -eux
+          UI_DIST_ARG=""
+          if [ "${{ inputs.bundle_webui }}" = "true" ] && [ -d webui-dist ]; then
+              UI_DIST_ARG="--ui-dist $PWD/webui-dist"
+          fi
+
           hc-scripts/build-archive.sh \
               --kind appliance \
               --target "${{ matrix.target }}" \
               --version "${{ github.ref_name }}" \
               --source "$PWD/caller" \
               --plugin-fragments-dir "$PWD/plugin-fragments" \
+              $UI_DIST_ARG \
               --out dist
 
       - name: Upload appliance artifact
@@ -500,34 +571,14 @@ jobs:
               exit 1
           fi
 
+          # WebUI bundle (already downloaded by "Download release artifacts").
+          # Dockerfile.core copies build-context/ui/ into the image.
+          if [ "${{ inputs.bundle_webui }}" = "true" ]; then
+              [ -d artifacts/webui-dist ] || { echo "::error::webui-dist artifact missing"; exit 1; }
+              cp -r artifacts/webui-dist build-context/ui
+          fi
+
           ls -la build-context
-
-      - name: Install Rust + wasm32 (for trunk build)
-        if: inputs.bundle_webui == true
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install trunk (prebuilt)
-        if: inputs.bundle_webui == true
-        run: |
-          set -eux
-          TRUNK_VERSION=v0.21.7
-          curl -fsSL \
-              "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-              | sudo tar -xzf - -C /usr/local/bin trunk
-          trunk --version
-
-      - name: Build WASM UI bundle
-        if: inputs.bundle_webui == true
-        run: |
-          set -eux
-          git clone --depth 1 \
-              --branch "${{ inputs.webui_ref }}" \
-              "https://github.com/${{ inputs.webui_repo }}.git" \
-              webui
-          (cd webui && trunk build --release)
-          cp -r webui/dist build-context/ui
 
       # QEMU is only needed for cross-arch emulation. Skip it entirely
       # when fast=true so the runner doesn't spend ~30s installing
