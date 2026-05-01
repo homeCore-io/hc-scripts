@@ -1,0 +1,61 @@
+# HomeCore Appliance {{VERSION}} ({{PLATFORM}})
+
+Core kernel + every official plugin in a single tarball. Statically-linked
+musl binaries — no glibc, no OpenSSL, no system dependencies.
+
+## Layout
+
+    homecore/
+    ├── bin/homecore                  # the daemon
+    ├── config/
+    │   ├── homecore.toml.example
+    │   └── profiles/
+    ├── ui/dist/                      # Leptos Web UI WASM bundle
+    ├── scripts/
+    │   └── service-templates/        # systemd unit template
+    └── plugins/
+        ├── hc-hue/{bin,config}
+        ├── hc-yolink/{bin,config}
+        ├── hc-lutron/{bin,config}
+        └── … all bundled plugins
+
+## First run
+
+    cp config/homecore.toml.example config/homecore.toml
+    $EDITOR config/homecore.toml
+    ./bin/homecore --config config/homecore.toml
+
+The REST API listens on `:8080`. The embedded MQTT broker binds to
+`127.0.0.1:1883` by default — read the "Security model" section of the
+docs before exposing it on the LAN.
+
+## Enabling plugins
+
+The plugin binaries are present on disk, but only the plugins explicitly
+listed in `config/homecore.toml` get spawned. Add a `[[plugins]]` block
+per device integration you actually want — see
+`config/homecore.toml.example` for the format and the plugin list
+available in this archive. Each plugin's `config/config.toml.example`
+documents its specific fields.
+
+## Verifying this archive
+
+    sha256sum -c homecore-appliance-{{VERSION}}-{{PLATFORM}}.tar.gz.sha256
+
+If verification fails, do not extract.
+
+## systemd
+
+`scripts/service-templates/homecore.service` is a systemd unit template.
+Edit the paths inside to match your install location, then:
+
+    sudo cp scripts/service-templates/homecore.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now homecore.service
+    sudo journalctl -u homecore.service -f
+
+## Documentation
+
+Full docs at <https://homeCore-io.github.io/>.
+
+License: MIT OR Apache-2.0.

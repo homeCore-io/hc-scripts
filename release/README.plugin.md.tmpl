@@ -1,0 +1,54 @@
+# {{BINARY_NAME}} {{VERSION}} ({{PLATFORM}})
+
+HomeCore plugin fragment. Statically-linked musl binary — no glibc, no
+OpenSSL, no system dependencies.
+
+This archive only contains files under `homecore/plugins/{{BINARY_NAME}}/`.
+Extract it on top of an existing core install — the `homecore/` directory
+will merge cleanly without overwriting anything else.
+
+## Layout
+
+    homecore/
+    └── plugins/
+        └── {{BINARY_NAME}}/
+            ├── bin/{{BINARY_NAME}}
+            └── config/
+                └── config.toml.example
+
+## Install
+
+Assuming you already extracted a `homecore-core-*` archive next to where
+you want this plugin to land:
+
+    cd <parent of homecore/>
+    tar -xzf {{BINARY_NAME}}-{{VERSION}}-{{PLATFORM}}.tar.gz
+
+Copy the example config and fill in your device-side credentials:
+
+    cp homecore/plugins/{{BINARY_NAME}}/config/config.toml.example \
+       homecore/plugins/{{BINARY_NAME}}/config/config.toml
+    $EDITOR homecore/plugins/{{BINARY_NAME}}/config/config.toml
+
+Then enable the plugin in your core's `homecore/config/homecore.toml`:
+
+    [[plugins]]
+    id      = "plugin.<short-name>"
+    binary  = "plugins/{{BINARY_NAME}}/bin/{{BINARY_NAME}}"
+    config  = "plugins/{{BINARY_NAME}}/config/config.toml"
+    enabled = true
+
+Restart core to spawn the plugin.
+
+## Verifying this archive
+
+    sha256sum -c {{BINARY_NAME}}-{{VERSION}}-{{PLATFORM}}.tar.gz.sha256
+
+If verification fails, do not extract.
+
+## Documentation
+
+Plugin-specific config reference and per-device notes live at
+<https://homeCore-io.github.io/docs/plugins/>.
+
+License: MIT OR Apache-2.0.

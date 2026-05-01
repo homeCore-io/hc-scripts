@@ -122,11 +122,45 @@ default_bin() {
 mkdir -p "$OUT_DIR"
 log() { echo "==> $*"; }
 
+# Resolve the directory holding this script so we can find bundled
+# release/README.<kind>.md.tmpl files alongside it.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ── Helpers ─────────────────────────────────────────────────────────
+render_readme() {
+  # Render a Markdown README into the archive root, substituting
+  # {{VERSION}} / {{PLATFORM}} / {{BINARY_NAME}} placeholders.
+  #
+  # Lookup order:
+  #   1. $SOURCE/scripts/release/README.md.tmpl    (per-repo override)
+  #   2. $SCRIPT_DIR/release/README.<kind>.md.tmpl (script-bundled default)
+  #
+  # If neither exists, fall back to copying the source repo's top-level
+  # README.md verbatim — preserves backward compatibility for callers
+  # that haven't adopted templates yet.
+  local kind="$1" dest="$2" binary_name="$3"
+  local tmpl=""
+  if [[ -f "$SOURCE/scripts/release/README.md.tmpl" ]]; then
+    tmpl="$SOURCE/scripts/release/README.md.tmpl"
+  elif [[ -f "$SCRIPT_DIR/release/README.${kind}.md.tmpl" ]]; then
+    tmpl="$SCRIPT_DIR/release/README.${kind}.md.tmpl"
+  fi
+
+  if [[ -n "$tmpl" ]]; then
+    sed \
+      -e "s|{{VERSION}}|${VERSION}|g" \
+      -e "s|{{PLATFORM}}|${PLATFORM}|g" \
+      -e "s|{{BINARY_NAME}}|${binary_name}|g" \
+      -e "s|{{KIND}}|${kind}|g" \
+      "$tmpl" > "$dest/README.md"
+  elif [[ -f "$SOURCE/README.md" ]]; then
+    cp "$SOURCE/README.md" "$dest/README.md"
+  fi
+}
+
 copy_root_assets() {
   # Files that go at the root of homecore/ in core and appliance archives.
   local root="$1"
-  [[ -f "$SOURCE/README.md" ]] && cp "$SOURCE/README.md" "$root/"
   for f in LICENSE LICENSE-MIT LICENSE-APACHE; do
     [[ -f "$SOURCE/$f" ]] && cp "$SOURCE/$f" "$root/"
   done
@@ -180,6 +214,7 @@ case "$KIND" in
     maybe_build homecore
     stage=$(mktemp -d)
     stage_core "$stage"
+    render_readme core "$stage/homecore" homecore
     write_archive "$stage" "homecore-core-${VERSION}-${PLATFORM}.tar.gz"
     ;;
 
@@ -195,6 +230,7 @@ case "$KIND" in
     chmod 755 "$root/bin/$NAME"
     [[ -f "$SOURCE/config/config.toml.example" ]] && cp "$SOURCE/config/config.toml.example" "$root/config/"
 
+    render_readme plugin "$root" "$NAME"
     write_archive "$stage" "${NAME}-${VERSION}-${PLATFORM}.tar.gz"
     ;;
 
@@ -220,6 +256,9 @@ case "$KIND" in
     [[ "$count" -gt 0 ]] || { echo "ERROR: no plugin fragments found in $PLUGIN_FRAGMENTS_DIR" >&2; exit 1; }
     log "merged $count plugin fragments"
 
+    # Render appliance README last so it overrides the core README that
+    # stage_core wrote in (plugin fragments don't touch the root README).
+    render_readme appliance "$stage/homecore" homecore
     write_archive "$stage" "homecore-appliance-${VERSION}-${PLATFORM}.tar.gz"
     ;;
 esac
