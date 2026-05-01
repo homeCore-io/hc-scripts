@@ -100,6 +100,24 @@ on:
         required: false
         default: false
         type: boolean
+      # ─── Appliance assembly (opt-in, tag-push only) ──────────────────────
+      assemble_appliance:
+        description: >-
+          Assemble an appliance archive (homecore + every plugin) per platform.
+          Only fires on tag push. Plugin tarballs are downloaded from each
+          plugin repo's matching GitHub Release page — every plugin in the
+          list must have a release with the same tag for assembly to succeed.
+        required: false
+        default: false
+        type: boolean
+      appliance_plugins:
+        description: >-
+          Newline-separated list of plugin repo names (under homeCore-io)
+          to include in the appliance, e.g. `hc-hue\nhc-yolink\n...`.
+          Required when assemble_appliance=true.
+        required: false
+        default: ''
+        type: string
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -167,58 +185,162 @@ jobs:
               cargo build --release --bin ${{ inputs.binary_name }}
             '
 
+      - name: Fetch hc-scripts (for build-archive.sh)
+        uses: actions/checkout@v4
+        with:
+          repository: homeCore-io/hc-scripts
+          ref: main
+          path: .hc-scripts
+
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          # workflow_dispatch (any branch) → dev-<sha>; tag push (v*) → keep ref_name.
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+              VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Assemble archive
         id: package
         run: |
           set -eux
-          VERSION="${GITHUB_REF_NAME}"
-          # workflow_dispatch off main has ref_name=main; tag pushes have v*.
-          [ "${VERSION}" = "main" ] && VERSION="dev-$(git rev-parse --short HEAD)"
+          # Build the per-binary directly into target/<triple>/release so
+          # build-archive.sh's default lookup path Just Works. The build
+          # step above placed the binary at target/release; copy it.
+          mkdir -p "target/${{ matrix.target }}/release"
+          cp "target/release/${{ inputs.binary_name }}" \
+             "target/${{ matrix.target }}/release/${{ inputs.binary_name }}"
 
-          NAME="${{ inputs.binary_name }}-${VERSION}-${{ matrix.platform }}"
-          mkdir -p "${NAME}/bin"
-
-          # release/ contains both x86_64 and aarch64 build outputs since we
-          # built into the default target dir inside the container; the
-          # binary is the same regardless of arch (single per-build container).
-          cp "target/release/${{ inputs.binary_name }}" "${NAME}/bin/"
-          chmod +x "${NAME}/bin/${{ inputs.binary_name }}"
-
-          if [ -n "${{ inputs.config_example }}" ] && [ -f "${{ inputs.config_example }}" ]; then
-              mkdir -p "${NAME}/config"
-              cp "${{ inputs.config_example }}" "${NAME}/config/"
+          # core: --kind core   (binary_name == homecore)
+          # plugin: --kind plugin --name <binary_name>
+          # everything else (e.g. hc-tui) packaged as a generic plugin
+          # fragment so the per-archive shape stays uniform.
+          if [ "${{ inputs.binary_name }}" = "homecore" ]; then
+              KIND_ARGS="--kind core"
+          else
+              KIND_ARGS="--kind plugin --name ${{ inputs.binary_name }}"
           fi
 
-          if [ -f README.md ]; then
-              cp README.md "${NAME}/"
-          fi
+          # NOTE: bundle_webui is currently only consumed by the
+          # docker-publish job. The archive here ships without the
+          # WASM bundle. Bundling into the archive can be added later
+          # via a parallel webui-build job that produces an artifact
+          # both this step and docker-publish download.
+          .hc-scripts/build-archive.sh \
+              $KIND_ARGS \
+              --target "${{ matrix.target }}" \
+              --version "${{ steps.ver.outputs.version }}" \
+              --source "$PWD" \
+              --out dist
 
-          # extra_files: one path per line; copy each (file or dir) to archive root
-          if [ -n "${{ inputs.extra_files }}" ]; then
-              while IFS= read -r entry; do
-                  [ -z "$entry" ] && continue
-                  if [ -e "$entry" ]; then
-                      cp -r "$entry" "${NAME}/"
-                  else
-                      echo "::warning::extra_files entry not found: $entry"
-                  fi
-              done <<EOF
-          ${{ inputs.extra_files }}
-          EOF
-          fi
-
-          tar -czf "${NAME}.tar.gz" "${NAME}"
-          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
-
-          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          # Capture the produced archive path for the upload step.
+          archive=$(ls dist/*.tar.gz | head -1)
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+          echo "archive_basename=$(basename "$archive" .tar.gz)" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}
           path: |
-            ${{ steps.package.outputs.name }}.tar.gz
-            ${{ steps.package.outputs.name }}.tar.gz.sha256
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Appliance — opt-in, tag-push only. Downloads each plugin's matching
+  # tarball from its own GitHub Release page and merges into a single
+  # homecore-appliance archive per platform.
+  # ---------------------------------------------------------------------------
+  appliance:
+    name: Appliance ${{ matrix.platform }}
+    needs: build
+    runs-on: ubuntu-latest
+    if: >-
+      inputs.assemble_appliance == true &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{
+            inputs.fast
+            && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"}]')
+            || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64"}]')
+          }}
+
+    steps:
+      - name: Checkout caller
+        uses: actions/checkout@v4
+        with:
+          path: caller
+
+      - name: Fetch hc-scripts
+        uses: actions/checkout@v4
+        with:
+          repository: homeCore-io/hc-scripts
+          ref: main
+          path: hc-scripts
+
+      - name: Download core archive (this build)
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: core-artifacts
+
+      - name: Extract core binary into expected layout
+        run: |
+          set -eux
+          # Extract the core archive so build-archive.sh can find the
+          # binary at target/<triple>/release/homecore.
+          tar -C "$RUNNER_TEMP" -xf "core-artifacts/homecore-core-${GITHUB_REF_NAME}-${{ matrix.platform }}.tar.gz"
+          mkdir -p "caller/target/${{ matrix.target }}/release"
+          cp "$RUNNER_TEMP/homecore/bin/homecore" \
+             "caller/target/${{ matrix.target }}/release/homecore"
+
+      - name: Download plugin tarballs from GitHub Releases
+        env:
+          TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
+          PLUGINS: ${{ inputs.appliance_plugins }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          mkdir -p plugin-fragments
+          while IFS= read -r plugin; do
+            [ -z "$plugin" ] && continue
+            asset="${plugin}-${TAG}-${PLATFORM}.tar.gz"
+            echo "==> downloading $asset from homeCore-io/${plugin}@${TAG}"
+            gh release download "$TAG" \
+                --repo "homeCore-io/${plugin}" \
+                --pattern "$asset" \
+                --dir plugin-fragments
+          done <<EOF
+          ${PLUGINS}
+          EOF
+          ls -la plugin-fragments
+
+      - name: Assemble appliance archive
+        run: |
+          set -eux
+          hc-scripts/build-archive.sh \
+              --kind appliance \
+              --target "${{ matrix.target }}" \
+              --version "${{ github.ref_name }}" \
+              --source "$PWD/caller" \
+              --plugin-fragments-dir "$PWD/plugin-fragments" \
+              --out dist
+
+      - name: Upload appliance artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appliance-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -226,9 +348,13 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
-    needs: build
+    needs: [build, appliance]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (needs.appliance.result == 'success' || needs.appliance.result == 'skipped') &&
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 
