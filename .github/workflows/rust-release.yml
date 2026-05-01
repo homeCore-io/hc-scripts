@@ -458,7 +458,13 @@ jobs:
     name: Publish Docker image
     needs: build
     runs-on: ubuntu-latest
+    # always() + explicit success check — without this, the transitive
+    # skip from webui-build (skipped when bundle_webui=false) propagates
+    # through build and marks this job skipped too. Same pattern as the
+    # release job below.
     if: >-
+      always() &&
+      needs.build.result == 'success' &&
       inputs.publish_docker_image == true &&
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'repository_dispatch' ||
