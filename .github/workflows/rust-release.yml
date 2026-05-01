@@ -33,6 +33,11 @@ name: rust-release
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+# TEMPORARY (v0.1.0 release window): force every tag-push build to skip
+# aarch64 — multi-arch will be a deliberate later run. Search for
+# `# FORCE_FAST` markers below; revert by changing each `true` back to
+# `inputs.fast` (and `false` back to `!inputs.fast` at the QEMU gate).
+
 on:
   workflow_call:
     inputs:
@@ -183,10 +188,10 @@ jobs:
       matrix:
         include: >-
           ${{
-            inputs.fast
+            true
             && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"}]')
             || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64","arch":"arm64"}]')
-          }}
+          }}     # FORCE_FAST: revert `true` → `inputs.fast`
 
     steps:
       - name: Checkout
@@ -326,10 +331,10 @@ jobs:
       matrix:
         include: >-
           ${{
-            inputs.fast
+            true
             && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"}]')
             || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64"}]')
-          }}
+          }}     # FORCE_FAST: revert `true` → `inputs.fast`
 
     steps:
       - name: Checkout caller
@@ -594,7 +599,7 @@ jobs:
       # when fast=true so the runner doesn't spend ~30s installing
       # binfmt handlers it won't use.
       - name: Set up QEMU
-        if: ${{ !inputs.fast }}
+        if: ${{ false }}     # FORCE_FAST: revert `false` → `!inputs.fast`
         uses: docker/setup-qemu-action@v3
         with:
           platforms: linux/amd64,linux/arm64
@@ -614,7 +619,7 @@ jobs:
         with:
           context: ./build-context
           file: ./build-context/Dockerfile
-          platforms: ${{ inputs.fast && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          platforms: ${{ true && 'linux/amd64' || 'linux/amd64,linux/arm64' }}     # FORCE_FAST: revert `true` → `inputs.fast`
           build-args: |
             BINARY_NAME=${{ inputs.binary_name }}
           tags: ${{ steps.resolve.outputs.tags }}
