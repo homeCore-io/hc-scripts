@@ -1,0 +1,62 @@
+# HomeCore {{VERSION}} ({{PLATFORM}})
+
+Statically-linked musl binary. Extract this archive and you have the core
+kernel, embedded MQTT broker, and Web UI in a single `homecore/` tree —
+no glibc, no OpenSSL, no system dependencies.
+
+## Layout
+
+    homecore/
+    ├── bin/homecore                # the daemon
+    ├── config/
+    │   ├── homecore.toml.example   # copy to homecore.toml and edit
+    │   └── profiles/               # ecosystem profiles (Tasmota, Shelly, …)
+    ├── ui/dist/                    # Leptos Web UI WASM bundle
+    ├── scripts/
+    │   └── service-templates/      # systemd unit template
+    └── plugins/                    # plugin fragments extract here
+
+## First run
+
+    cp config/homecore.toml.example config/homecore.toml
+    $EDITOR config/homecore.toml
+    ./bin/homecore --config config/homecore.toml
+
+The REST API listens on `:8080`. The embedded MQTT broker binds to
+`127.0.0.1:1883` by default — read the "Security model" section of the
+docs before exposing it on the LAN.
+
+## Adding plugins
+
+Each plugin ships as a separate `<plugin>-{{VERSION}}-{{PLATFORM}}.tar.gz`
+fragment. Extract on top of this tree — the layout is designed to merge
+without overwriting unrelated files:
+
+    tar -xzf hc-hue-{{VERSION}}-{{PLATFORM}}.tar.gz       # → homecore/plugins/hc-hue/
+    tar -xzf hc-yolink-{{VERSION}}-{{PLATFORM}}.tar.gz    # → homecore/plugins/hc-yolink/
+
+Then enable each plugin in `config/homecore.toml` under its own
+`[[plugins]]` block. Each plugin archive includes a README with the
+specific config fields it needs.
+
+## Verifying this archive
+
+    sha256sum -c homecore-core-{{VERSION}}-{{PLATFORM}}.tar.gz.sha256
+
+If verification fails, do not extract.
+
+## systemd
+
+`scripts/service-templates/homecore.service` is a systemd unit template.
+Edit the paths inside to match your install location, then:
+
+    sudo cp scripts/service-templates/homecore.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now homecore.service
+    sudo journalctl -u homecore.service -f
+
+## Documentation
+
+Full docs at <https://homeCore-io.github.io/>.
+
+License: MIT OR Apache-2.0.

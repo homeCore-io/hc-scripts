@@ -493,7 +493,11 @@ jobs:
           # reach this job (gated above) since main is just a release-
           # marker FF target.
           if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-              TAG="${GITHUB_REF_NAME}"
+              # Strip the leading `v` from the git tag so image tags use the
+              # bare version (`0.1.0`), matching the convention in
+              # homeCore-io/docker compose files. The git tag itself stays as
+              # `v0.1.0` (mirrored as the GitHub Release name).
+              TAG="${GITHUB_REF_NAME#v}"
               TAGS="${BASE}:${TAG}"
           else
               TAG="dev-${GITHUB_SHA::7}"
