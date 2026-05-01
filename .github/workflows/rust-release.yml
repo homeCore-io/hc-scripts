@@ -206,12 +206,12 @@ jobs:
         id: package
         run: |
           set -eux
-          # Build the per-binary directly into target/<triple>/release so
-          # build-archive.sh's default lookup path Just Works. The build
-          # step above placed the binary at target/release; copy it.
-          mkdir -p "target/${{ matrix.target }}/release"
-          cp "target/release/${{ inputs.binary_name }}" \
-             "target/${{ matrix.target }}/release/${{ inputs.binary_name }}"
+          # The cargo build inside Docker writes target/release as root,
+          # so the runner user can't mkdir under target/. Pass --bin
+          # directly to build-archive.sh pointing at the Docker-built
+          # path, sidestepping the ownership issue entirely.
+          BIN_PATH="target/release/${{ inputs.binary_name }}"
+          [ -f "$BIN_PATH" ] || { echo "::error::binary not found at $BIN_PATH"; exit 1; }
 
           # core: --kind core   (binary_name == homecore)
           # plugin: --kind plugin --name <binary_name>
@@ -233,6 +233,7 @@ jobs:
               --target "${{ matrix.target }}" \
               --version "${{ steps.ver.outputs.version }}" \
               --source "$PWD" \
+              --bin "$BIN_PATH" \
               --out dist
 
           # Capture the produced archive path for the upload step.
