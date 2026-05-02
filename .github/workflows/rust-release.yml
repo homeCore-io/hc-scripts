@@ -367,22 +367,24 @@ jobs:
           cp "$RUNNER_TEMP/homecore/bin/homecore" \
              "caller/target/${{ matrix.target }}/release/homecore"
 
-      - name: Download plugin tarballs from GitHub Releases
+      - name: Download plugin tarballs from each plugin's `latest` release
         env:
-          TAG: ${{ github.ref_name }}
           PLATFORM: ${{ matrix.platform }}
           PLUGINS: ${{ inputs.appliance_plugins }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eux
+          # Each plugin maintains a `latest` release that mirrors its most
+          # recent stable tag (force-updated by publish-latest below). Pulling
+          # by `latest` here decouples plugin versioning from core/appliance
+          # cadence — plugins ship at their own pace.
           mkdir -p plugin-fragments
           while IFS= read -r plugin; do
             [ -z "$plugin" ] && continue
-            asset="${plugin}-${TAG}-${PLATFORM}.tar.gz"
-            echo "==> downloading $asset from homeCore-io/${plugin}@${TAG}"
-            gh release download "$TAG" \
+            echo "==> downloading $plugin's latest *-${PLATFORM}.tar.gz"
+            gh release download latest \
                 --repo "homeCore-io/${plugin}" \
-                --pattern "$asset" \
+                --pattern "*-${PLATFORM}.tar.gz" \
                 --dir plugin-fragments
           done <<EOF
           ${PLUGINS}
@@ -454,6 +456,52 @@ jobs:
             artifacts/**/*.tar.gz.sha256
 
   # ---------------------------------------------------------------------------
+  # Latest mirror — runs after the canonical release is created on tag push.
+  # Force-rewrites a `latest` git tag + GitHub Release at this commit, holding
+  # the same artifacts. Appliance assembly (this workflow's `appliance` job
+  # plus homeCore-io/docker's appliance-release.yml) pulls from `latest` so
+  # plugin versioning is independent of core/appliance cadence.
+  # ---------------------------------------------------------------------------
+  publish-latest:
+    name: Update `latest` mirror
+    needs: release
+    runs-on: ubuntu-latest
+    if: |
+      always() &&
+      needs.release.result == 'success' &&
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Force-update `latest` release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          # Idempotent reset: drop any prior `latest` release + tag. The `|| true`
+          # absorbs the first-ever run when neither exists.
+          gh release delete latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --cleanup-tag --yes 2>/dev/null || true
+
+          # Recreate at the current commit, attach the same artifacts as the
+          # canonical version release. Operators/appliance build steps pull
+          # `latest` for "always-most-recent-stable" semantics.
+          gh release create latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "latest (mirrors $GITHUB_REF_NAME)" \
+              --notes "Auto-mirrored from $GITHUB_REF_NAME on every release. Use this tag for the most recent stable build without pinning a specific version." \
+              artifacts/**/*.tar.gz \
+              artifacts/**/*.tar.gz.sha256
+
+  # ---------------------------------------------------------------------------
   # Docker — opt-in. Builds a multi-arch alpine image from the prebuilt
   # musl binaries and pushes to ghcr.io/<owner>/<image_name>.
   #
@@ -504,8 +552,11 @@ jobs:
               # bare version (`0.1.0`), matching the convention in
               # homeCore-io/docker compose files. The git tag itself stays as
               # `v0.1.0` (mirrored as the GitHub Release name).
+              # Push BOTH the immutable version tag and the rolling :latest
+              # tag — appliance assembly pulls per-component images by :latest
+              # so plugin versioning is independent of appliance/core cadence.
               TAG="${GITHUB_REF_NAME#v}"
-              TAGS="${BASE}:${TAG}"
+              TAGS=$(printf '%s\n%s' "${BASE}:${TAG}" "${BASE}:latest")
           else
               TAG="dev-${GITHUB_SHA::7}"
               TAGS=$(printf '%s\n%s' "${BASE}:${TAG}" "${BASE}:dev")
