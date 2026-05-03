@@ -105,6 +105,16 @@ on:
         required: false
         default: false
         type: boolean
+      refresh_deps:
+        description: >-
+          Run `cargo update` for the in-org git deps (plugin-sdk-rs, hc-types,
+          hc-logging, hc-time) before `cargo build`. Off by default so tag-push
+          builds remain reproducible against the committed Cargo.lock. Turn on
+          for SDK fanout dispatches so the rebuild actually carries the new
+          SDK code instead of whatever SHA Cargo.lock currently pins.
+        required: false
+        default: false
+        type: boolean
       # ─── Appliance assembly (opt-in, tag-push only) ──────────────────────
       assemble_appliance:
         description: >-
@@ -230,14 +240,28 @@ jobs:
           else
               IMAGE="rust:${{ inputs.rust_version }}-alpine"
           fi
+          # When refresh_deps is on, refresh in-org git deps so SDK fanout
+          # dispatches actually pick up the latest SDK code. Each `cargo
+          # update -p <name>` is independent and may fail (e.g. when this
+          # particular caller doesn't depend on hc-time directly) — `|| true`
+          # absorbs the failure so we don't break for callers with a
+          # narrower dep graph. Reproducibility trade-off: with this flag
+          # on, two builds of the same caller SHA can produce different
+          # binaries if the upstream `branch = "main"` ref advanced.
+          REFRESH_CMD=":"
+          if [ "${{ inputs.refresh_deps }}" = "true" ]; then
+              REFRESH_CMD='for p in plugin-sdk-rs hc-types hc-logging hc-time; do cargo update -p "$p" || true; done'
+          fi
           docker run --rm \
             --platform linux/${{ matrix.arch }} \
             -v "$PWD:/src" \
             -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
             -w /src \
+            -e REFRESH_CMD="$REFRESH_CMD" \
             "$IMAGE" \
             sh -c '
               apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
+              eval "$REFRESH_CMD"
               cargo build --release --bin ${{ inputs.binary_name }}
             '
 
