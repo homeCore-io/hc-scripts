@@ -56,9 +56,12 @@ on:
         default: ''
         type: string
       rust_version:
-        description: 'Rust toolchain version.'
+        description: 'Rust toolchain version. Pinned default — bump
+          deliberately rather than tracking "stable" so a new Rust major
+          doesn''t silently change CI behavior. Was "stable" pre-2026-05-04
+          when alpine + Rust pinning landed (BPF-2.2).'
         required: false
-        default: "stable"
+        default: "1.95"
         type: string
       # ─── Docker image publishing (opt-in) ────────────────────────────────
       publish_docker_image:
