@@ -211,6 +211,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # On tag push, refuse to build if Cargo.toml's package version
+      # doesn't match the tag. Catches the lockstep drift that produced
+      # 0.1.1 binaries forever reporting "0.1.0" because env!(CARGO_PKG_VERSION)
+      # bakes in whatever Cargo.toml said at build time. Skipped on
+      # workflow_dispatch (no tag in flight). Mismatched tags will fail
+      # at this step before any wasted compile work.
+      - name: Verify Cargo.toml version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+          if [ -z "$PKG_VERSION" ]; then
+            echo "::error::Could not parse package version from Cargo.toml"
+            exit 1
+          fi
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v$TAG does not match Cargo.toml version $PKG_VERSION."
+            echo "::error::Bump the [package] version in Cargo.toml to $TAG before tagging."
+            exit 1
+          fi
+          echo "Tag v$TAG matches Cargo.toml version $PKG_VERSION ✓"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
