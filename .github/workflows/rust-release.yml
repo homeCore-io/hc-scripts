@@ -56,9 +56,12 @@ on:
         default: ''
         type: string
       rust_version:
-        description: 'Rust toolchain version.'
+        description: 'Rust toolchain version. Pinned default — bump
+          deliberately rather than tracking "stable" so a new Rust major
+          doesn''t silently change CI behavior. Was "stable" pre-2026-05-04
+          when alpine + Rust pinning landed (BPF-2.2).'
         required: false
-        default: "stable"
+        default: "1.95"
         type: string
       # ─── Docker image publishing (opt-in) ────────────────────────────────
       publish_docker_image:
@@ -208,6 +211,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # On tag push, refuse to build if Cargo.toml's package version
+      # doesn't match the tag. Catches the lockstep drift that produced
+      # 0.1.1 binaries forever reporting "0.1.0" because env!(CARGO_PKG_VERSION)
+      # bakes in whatever Cargo.toml said at build time. Skipped on
+      # workflow_dispatch (no tag in flight). Mismatched tags will fail
+      # at this step before any wasted compile work.
+      - name: Verify Cargo.toml version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+          if [ -z "$PKG_VERSION" ]; then
+            echo "::error::Could not parse package version from Cargo.toml"
+            exit 1
+          fi
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v$TAG does not match Cargo.toml version $PKG_VERSION."
+            echo "::error::Bump the [package] version in Cargo.toml to $TAG before tagging."
+            exit 1
+          fi
+          echo "Tag v$TAG matches Cargo.toml version $PKG_VERSION ✓"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -240,17 +265,65 @@ jobs:
           else
               IMAGE="rust:${{ inputs.rust_version }}-alpine"
           fi
-          # When refresh_deps is on, refresh in-org git deps so SDK fanout
-          # dispatches actually pick up the latest SDK code. Each `cargo
-          # update -p <name>` is independent and may fail (e.g. when this
-          # particular caller doesn't depend on hc-time directly) — `|| true`
-          # absorbs the failure so we don't break for callers with a
-          # narrower dep graph. Reproducibility trade-off: with this flag
-          # on, two builds of the same caller SHA can produce different
-          # binaries if the upstream `branch = "main"` ref advanced.
+          # `refresh_deps` resolution strategy depends on the trigger:
+          #
+          # - **Tag push (release)**: pin each in-org git dep to the *latest
+          #   SemVer tag's SHA* via `cargo update -p <pkg> --precise <sha>`.
+          #   Released binaries get reproducibility against a stable Cargo.lock
+          #   that points at real tag commits, not whatever `branch = "main"`
+          #   happened to be at build time. Component versioning Phase D.
+          #
+          # - **workflow_dispatch (dev / SDK fanout)**: keep the legacy behavior
+          #   — `cargo update -p <pkg>` resolves against branch HEAD per the
+          #   plugin's Cargo.toml `branch = "main"` reference. SDK fanout
+          #   relies on this so dev images carry the latest SDK code.
+          #
+          # - **refresh_deps=false (default)**: noop — committed Cargo.lock
+          #   wins.
+          #
+          # Each `cargo update` is `|| true`-guarded because individual
+          # callers may not depend on every in-org crate (e.g. hc-tui doesn't
+          # use plugin-sdk-rs).
           REFRESH_CMD=":"
           if [ "${{ inputs.refresh_deps }}" = "true" ]; then
-              REFRESH_CMD='for p in plugin-sdk-rs hc-types hc-logging hc-time; do cargo update -p "$p" || true; done'
+              if [ "${{ github.event_name }}" = "push" ] \
+                  && [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+                  echo "Tag-push release — pinning in-org git deps to latest tag SHAs"
+                  CMD=""
+                  for entry in \
+                      "plugin-sdk-rs:homeCore-io/hc-plugin-sdk-rs" \
+                      "hc-types:homeCore-io/homeCore" \
+                      "hc-logging:homeCore-io/homeCore" \
+                      "hc-time:homeCore-io/homeCore"; do
+                      PKG="${entry%%:*}"
+                      REPO="${entry##*:}"
+                      # Latest SemVer-shaped tag (highest version), v-prefix tolerated.
+                      TAG=$(gh api "/repos/${REPO}/git/refs/tags" \
+                            --jq '.[] | .ref' 2>/dev/null \
+                          | sed 's|refs/tags/||' \
+                          | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+                          | sort -V \
+                          | tail -1 \
+                          || true)
+                      if [ -n "$TAG" ]; then
+                          SHA=$(gh api "/repos/${REPO}/git/refs/tags/${TAG}" \
+                                --jq '.object.sha' 2>/dev/null || true)
+                      else
+                          SHA=""
+                      fi
+                      if [ -n "$SHA" ]; then
+                          echo "  ${PKG} → ${REPO}@${TAG} (${SHA:0:7})"
+                          CMD="${CMD}cargo update -p ${PKG} --precise ${SHA} || true; "
+                      else
+                          echo "  ${PKG} → ${REPO} has no SemVer tag yet; falling back to branch HEAD"
+                          CMD="${CMD}cargo update -p ${PKG} || true; "
+                      fi
+                  done
+                  REFRESH_CMD="$CMD"
+              else
+                  echo "workflow_dispatch — refreshing in-org deps against branch HEAD"
+                  REFRESH_CMD='for p in plugin-sdk-rs hc-types hc-logging hc-time; do cargo update -p "$p" || true; done'
+              fi
           fi
           docker run --rm \
             --platform linux/${{ matrix.arch }} \
@@ -264,6 +337,8 @@ jobs:
               eval "$REFRESH_CMD"
               cargo build --release --bin ${{ inputs.binary_name }}
             '
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch hc-scripts (for build-archive.sh)
         uses: actions/checkout@v4

@@ -29,9 +29,12 @@ on:
   workflow_call:
     inputs:
       rust_version:
-        description: 'Rust toolchain to use (matches rustup channel/version).'
+        description: 'Rust toolchain to use (matches rustup channel/version).
+          Pinned default — bump deliberately rather than tracking "stable".
+          Aligned with hc-scripts/rust-release.yml + Dockerfile pins as of
+          BPF-2.2 (2026-05-04).'
         required: false
-        default: "stable"
+        default: "1.95"
         type: string
       run_clippy:
         description: 'Run clippy with -D warnings.'
