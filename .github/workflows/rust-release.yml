@@ -787,3 +787,53 @@ jobs:
             echo "${{ steps.resolve.outputs.tags }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Cascade — when a component publishes a fresh :dev image on develop,
+  # dispatch homeCore-io/docker's appliance build so the dev appliance
+  # picks it up automatically. Without this, dev appliance is always
+  # stale until someone runs the appliance workflow by hand.
+  #
+  # Concurrency on the docker side (cancel-in-progress=true) collapses
+  # a burst of component pushes (e.g. SDK fanout firing all 10 plugins)
+  # into a single appliance build.
+  #
+  # Auth: CROSS_REPO_DISPATCH_PAT — org-level secret with actions:write
+  # on homeCore-io/docker. Reached via `secrets: inherit` at the caller
+  # site, so each caller release.yml must include that line.
+  # ---------------------------------------------------------------------------
+  dispatch-appliance:
+    name: Dispatch appliance rebuild
+    needs: docker-publish
+    runs-on: ubuntu-latest
+    if: >-
+      always() &&
+      needs.docker-publish.result == 'success' &&
+      inputs.publish_docker_image == true &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop'
+    steps:
+      - name: Pre-flight — token reachable
+        run: |
+          if [ -z "${{ secrets.CROSS_REPO_DISPATCH_PAT }}" ]; then
+            echo "::warning::CROSS_REPO_DISPATCH_PAT not set; appliance cascade skipped. Set it as an org-level secret (or per-repo) to enable."
+            exit 0
+          fi
+      - name: Fire repository_dispatch on homeCore-io/docker
+        if: ${{ secrets.CROSS_REPO_DISPATCH_PAT != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
+          COMPONENT: ${{ inputs.image_name || inputs.binary_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          gh api repos/homeCore-io/docker/dispatches \
+            --method POST \
+            -f event_type=component-dev-published \
+            --field "client_payload[component]=${COMPONENT}" \
+            --field "client_payload[sha]=${SHA}" \
+            --field "client_payload[source_repo]=${{ github.repository }}"
+      - name: Summary
+        run: |
+          {
+            echo "Dispatched homeCore-io/docker → appliance-release.yml (event_type=component-dev-published) for ${{ inputs.image_name || inputs.binary_name }}"
+          } >> "$GITHUB_STEP_SUMMARY"
