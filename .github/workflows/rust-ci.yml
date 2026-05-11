@@ -51,6 +51,11 @@ jobs:
   ci:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
+    # issues:write so the failure/recovery notify steps below can open
+    # and close a tracking issue when develop goes red.
+    permissions:
+      contents: read
+      issues: write
 
     steps:
       - name: Checkout
@@ -91,3 +96,50 @@ jobs:
       - name: cargo test
         if: ${{ inputs.run_tests }}
         run: cargo test --all-features
+
+      # ── Develop CI is otherwise unwatched (no branch protection, no
+      # required-checks gate), so red status can rot for days. Open a
+      # single tracking issue per repo when develop fails and close it
+      # when develop recovers. Pull requests and main pushes skip this —
+      # PR red is already visible to the author, and main red would
+      # block merges anyway.
+      - name: Open tracking issue on develop failure
+        if: failure() && github.ref == 'refs/heads/develop' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -e
+          TITLE="CI failing on develop"
+          BODY="Develop CI failed: ${RUN_URL} (sha ${SHA})
+
+          This issue auto-closes when develop CI passes again."
+          # Match by title — avoids requiring a ci-failure label to exist.
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+              --search "\"${TITLE}\" in:title" \
+              --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$REPO" \
+                  --body "Run failed again: ${RUN_URL} (sha ${SHA})"
+          else
+              gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Close tracking issue on develop recovery
+        if: success() && github.ref == 'refs/heads/develop' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -e
+          TITLE="CI failing on develop"
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+              --search "\"${TITLE}\" in:title" \
+              --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+              gh issue close "$EXISTING" --repo "$REPO" \
+                  --comment "Develop CI green again (sha ${SHA})."
+          fi

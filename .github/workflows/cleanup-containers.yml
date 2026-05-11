@@ -4,14 +4,14 @@ name: Cleanup container versions
 # weekly Sunday 09:00 UTC. Each package is pruned in parallel.
 #
 # Retention (per package):
-#   KEEP forever : versions tagged `v*` (release pins) or `latest`
-#   KEEP         : the 5 most recent versions outside that protection
-#   DELETE       : untagged orphan digests
-#   DELETE       : older versions outside the keep-5 window
-#
-# `min-versions-to-keep: 5` is itself the kill-switch — even if the
-# regex misclassifies, the action will refuse to leave a package with
-# fewer than 5 versions.
+#   KEEP forever : versions tagged at all (release tags, `latest`, `dev`,
+#                  `dev-<sha>`, anything)
+#   KEEP forever : per-platform child manifests referenced by any tagged
+#                  multi-arch index (otherwise pulling the index 404s on
+#                  amd64/arm64 children — see incident 2026-05-11)
+#   KEEP         : the 5 most recent untagged versions outside that
+#                  protected set
+#   DELETE       : everything else
 #
 # Auth: needs PACKAGES_PAT (classic, scopes: read:packages,
 # delete:packages, read:org). The default GITHUB_TOKEN cannot manage
@@ -48,23 +48,92 @@ jobs:
           - hc-wled
           - hc-thermostat
     steps:
-      - name: Delete untagged orphans
+      - name: Compute deletable version IDs
+        id: compute
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_PAT }}
+          PKG: ${{ matrix.package }}
+          OWNER: homeCore-io
+          OWNER_LC: homecore-io
+        run: |
+          set -eu
+
+          # 1) Snapshot every version of this package.
+          gh api --paginate "/orgs/${OWNER}/packages/container/${PKG}/versions" \
+              --jq '.[] | {id: .id, digest: .name, tags: (.metadata.container.tags // [])}' \
+              | jq -s '.' > all.json
+          total=$(jq 'length' all.json)
+          echo "Total versions: ${total}"
+
+          # 2) Anonymous read token for ghcr.io manifest fetches. Works
+          #    for public packages; for private we'd need to thread the
+          #    PAT through as basic auth, but homeCore-io's images are
+          #    public so the simpler path is fine.
+          GHCR_TOKEN=$(curl -fsSL \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${OWNER_LC}/${PKG}:pull" \
+              | jq -r .token)
+
+          # 3) Build the protected digest set: every tagged version's
+          #    digest, plus every child manifest digest if the tagged
+          #    version is a multi-arch index.
+          : > protected.txt
+          jq -r '.[] | select(.tags|length > 0) | .digest' all.json \
+              | sort -u > tagged.txt
+          while IFS= read -r d; do
+              [ -z "$d" ] && continue
+              echo "$d" >> protected.txt
+              # Manifest may be an OCI index OR a single-arch image. The
+              # `.manifests` field only exists on the former; jq emits
+              # nothing for image manifests so they're a no-op.
+              curl -fsSL \
+                  -H "Authorization: Bearer ${GHCR_TOKEN}" \
+                  -H "Accept: application/vnd.oci.image.index.v1+json" \
+                  -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+                  -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                  -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                  "https://ghcr.io/v2/${OWNER_LC}/${PKG}/manifests/${d}" \
+                  | jq -r 'if (.manifests // empty) then .manifests[].digest else empty end' \
+                  >> protected.txt 2>/dev/null || true
+          done < tagged.txt
+          sort -u protected.txt > protected.sorted
+          mv protected.sorted protected.txt
+          echo "Protected digests: $(wc -l < protected.txt)"
+
+          # 4) Candidate deletions = untagged versions whose digest is
+          #    not in the protected set. Sort by id descending (newest
+          #    first), drop the first 5 (keep window), comma-join the
+          #    rest. Empty output is fine — the delete step is gated on
+          #    a non-empty list.
+          jq -r '.[] | select(.tags|length == 0) | "\(.id) \(.digest)"' all.json \
+              | sort -k1,1 -nr > untagged.txt
+          # Strip protected digests
+          awk 'NR==FNR{p[$1]=1; next} !($2 in p){print $0}' \
+              protected.txt untagged.txt > candidates.txt
+          # Keep 5 most recent, delete the rest
+          ids=$(awk 'NR>5 {print $1}' candidates.txt | paste -sd, -)
+          count=$(echo "$ids" | awk -F, '{print NF}')
+          [ -z "$ids" ] && count=0
+          echo "Untagged candidates: $(wc -l < candidates.txt), keeping 5, deleting ${count}"
+
+          {
+              echo "ids=${ids}"
+              echo "count=${count}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Delete unprotected, out-of-window versions
+        if: steps.compute.outputs.count != '0'
         uses: actions/delete-package-versions@v5
         continue-on-error: true
         with:
           owner: homeCore-io
           package-name: ${{ matrix.package }}
           package-type: container
-          delete-only-untagged-versions: 'true'
+          package-version-ids: ${{ steps.compute.outputs.ids }}
           token: ${{ secrets.PACKAGES_PAT }}
 
-      - name: Keep 5 most recent, protect v* and latest
-        uses: actions/delete-package-versions@v5
-        continue-on-error: true
-        with:
-          owner: homeCore-io
-          package-name: ${{ matrix.package }}
-          package-type: container
-          min-versions-to-keep: 5
-          ignore-versions: '^(v\d|latest)'
-          token: ${{ secrets.PACKAGES_PAT }}
+      - name: Summary
+        run: |
+          {
+              echo "## ${{ matrix.package }}"
+              echo "Deleted ${{ steps.compute.outputs.count }} versions."
+          } >> "$GITHUB_STEP_SUMMARY"
