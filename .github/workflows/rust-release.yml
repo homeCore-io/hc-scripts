@@ -818,19 +818,22 @@ jobs:
     env:
       PAT: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
     steps:
-      - name: Fire repository_dispatch on homeCore-io/docker
+      - name: Dispatch homeCore-io/docker appliance build
         if: env.PAT != ''
         env:
           GH_TOKEN: ${{ env.PAT }}
           COMPONENT: ${{ inputs.image_name || inputs.binary_name }}
-          SHA: ${{ github.sha }}
+        # workflow_dispatch (Actions: write) instead of repository_dispatch
+        # (Contents: write) — minimizes PAT permissions. The docker
+        # workflow's concurrency group (`appliance-dev`) coalesces a burst
+        # of component pushes into one effective build.
         run: |
-          gh api repos/homeCore-io/docker/dispatches \
-            --method POST \
-            -f event_type=component-dev-published \
-            --field "client_payload[component]=${COMPONENT}" \
-            --field "client_payload[sha]=${SHA}" \
-            --field "client_payload[source_repo]=${{ github.repository }}"
+          gh workflow run appliance-release.yml \
+            --repo homeCore-io/docker \
+            --ref develop \
+            -F component_tag=dev \
+            -F appliance_tag=dev \
+            -F fast=true
       - name: Skip notice (no PAT)
         if: env.PAT == ''
         run: |
@@ -839,5 +842,5 @@ jobs:
         if: env.PAT != ''
         run: |
           {
-            echo "Dispatched homeCore-io/docker → appliance-release.yml (event_type=component-dev-published) for ${{ inputs.image_name || inputs.binary_name }}"
+            echo "Dispatched homeCore-io/docker → appliance-release.yml for ${{ inputs.image_name || inputs.binary_name }}"
           } >> "$GITHUB_STEP_SUMMARY"
