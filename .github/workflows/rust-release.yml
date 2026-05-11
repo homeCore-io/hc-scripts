@@ -806,11 +806,16 @@ jobs:
     name: Dispatch appliance rebuild
     needs: docker-publish
     runs-on: ubuntu-latest
+    # Fire on every successful develop-channel :dev publish, regardless
+    # of how this workflow was triggered. Initially we gated on
+    # event_name=='push' but that excludes workflow_dispatch (which is
+    # how cross-repo cascades hit us, e.g. hc-web-leptos firing core's
+    # release after a UI change). Tag pushes are excluded because the
+    # appliance has its own tag-push handler that publishes :latest.
     if: >-
       always() &&
       needs.docker-publish.result == 'success' &&
       inputs.publish_docker_image == true &&
-      github.event_name == 'push' &&
       github.ref == 'refs/heads/develop'
     # `secrets.X` in step-level `if:` is rejected at workflow-parse time
     # (GH security hardening). Read the PAT into a job-level env var
