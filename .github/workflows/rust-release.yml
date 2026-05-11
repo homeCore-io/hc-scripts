@@ -812,17 +812,16 @@ jobs:
       inputs.publish_docker_image == true &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/develop'
+    # `secrets.X` in step-level `if:` is rejected at workflow-parse time
+    # (GH security hardening). Read the PAT into a job-level env var
+    # and branch on that instead.
+    env:
+      PAT: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
     steps:
-      - name: Pre-flight — token reachable
-        run: |
-          if [ -z "${{ secrets.CROSS_REPO_DISPATCH_PAT }}" ]; then
-            echo "::warning::CROSS_REPO_DISPATCH_PAT not set; appliance cascade skipped. Set it as an org-level secret (or per-repo) to enable."
-            exit 0
-          fi
       - name: Fire repository_dispatch on homeCore-io/docker
-        if: ${{ secrets.CROSS_REPO_DISPATCH_PAT != '' }}
+        if: env.PAT != ''
         env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
+          GH_TOKEN: ${{ env.PAT }}
           COMPONENT: ${{ inputs.image_name || inputs.binary_name }}
           SHA: ${{ github.sha }}
         run: |
@@ -832,7 +831,12 @@ jobs:
             --field "client_payload[component]=${COMPONENT}" \
             --field "client_payload[sha]=${SHA}" \
             --field "client_payload[source_repo]=${{ github.repository }}"
+      - name: Skip notice (no PAT)
+        if: env.PAT == ''
+        run: |
+          echo "::warning::CROSS_REPO_DISPATCH_PAT not set; appliance cascade skipped. Set it as an org-level secret (or per-repo) to enable."
       - name: Summary
+        if: env.PAT != ''
         run: |
           {
             echo "Dispatched homeCore-io/docker → appliance-release.yml (event_type=component-dev-published) for ${{ inputs.image_name || inputs.binary_name }}"
