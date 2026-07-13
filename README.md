@@ -110,14 +110,18 @@ ships**. Do not pass `rust_version: "stable"` from a caller — that gates merge
 on a compiler you never ship with, and turns CI red on Rust release day with no
 code change.
 
-`flutter-ci.yml` pins `flutter_version` for the same reason, matching the
-`ghcr.io/cirruslabs/flutter:<ver>` tag `hc-web`'s Dockerfile builds from. Two
-wrinkles specific to Flutter:
+`flutter-ci.yml` pins `flutter_version` for the same reason. Keep it equal to
+`ARG FLUTTER_VERSION` in `hc-web`'s Dockerfile — bump the two together, or CI is
+no longer testing what ships.
 
-- **The pin tracks the image, not the newest SDK.** cirruslabs lags upstream —
-  3.44.4 exists as an SDK while 3.44.0 is the newest published image. The image
-  is what builds the artifact, so the image wins. Bump the Dockerfile's `FROM`
-  and `flutter-ci.yml`'s default together, or CI is no longer testing what ships.
+Two wrinkles specific to Flutter:
+
+- **The Dockerfile fetches the SDK tarball directly**, rather than building from
+  `ghcr.io/cirruslabs/flutter`. That image bundles the Android SDK and NDK — about
+  2 GB of layers a *web* build never touches, and a cold build spent over eleven
+  minutes pulling it before compiling anything. It also only publishes some
+  versions, which forced the pin to track the registry instead of the SDK. Pulling
+  the tarball means the pin can be the version we actually develop against.
 - **`flutter analyze` exits non-zero on *any* finding, including infos.** That is
   deliberate — it is the only way a lint gets fixed rather than accumulating. CI
   also runs `dart format --set-exit-if-changed`, the counterpart of

@@ -30,16 +30,16 @@ on:
     inputs:
       flutter_version:
         description: 'Flutter SDK to use. Pinned default — bump deliberately
-          rather than tracking "stable".
+          rather than tracking "stable", so CI compiles with the toolchain that
+          actually ships.
 
-          The pin is bounded by what ghcr.io/cirruslabs/flutter actually
-          publishes, because that image is what builds the shipped artifact and
-          CI must compile with the toolchain that ships. The registry lags the
-          SDK (3.44.4 exists upstream; 3.44.0 is the newest image), so this
-          tracks the image, not the newest SDK. Keep it equal to the
-          Dockerfile''s FROM tag.'
+          Keep equal to ARG FLUTTER_VERSION in hc-web''s Dockerfile. That
+          Dockerfile fetches the SDK tarball directly rather than using
+          ghcr.io/cirruslabs/flutter (which bundles ~2 GB of Android SDK a web
+          build never touches), so the pin can be a real SDK version rather than
+          whatever that registry last published.'
         required: false
-        default: "3.44.0"
+        default: "3.44.4"
         type: string
       run_tests:
         description: 'Run flutter test.'
