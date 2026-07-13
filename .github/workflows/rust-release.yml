@@ -149,6 +149,21 @@ jobs:
     runs-on: ubuntu-latest
     if: inputs.bundle_webui == true
     steps:
+      # actions/checkout fails on a missing ref with "couldn't find remote ref",
+      # which does not tell a releaser what to do about it. Callers pin webui_ref
+      # to the release tag, so the usual cause is tagging core before tagging the
+      # UI — say that.
+      - name: Pre-flight — webui ref exists
+        run: |
+          set -eu
+          REPO='${{ inputs.webui_repo }}'
+          REF='${{ inputs.webui_ref }}'
+          if ! git ls-remote --exit-code "https://github.com/${REPO}" "${REF}" >/dev/null 2>&1; then
+            echo "::error::${REPO} has no ref '${REF}'. The web UI is not built by its own repo — it is cloned and built here, so the release cannot proceed without this ref. If you are cutting a release, tag ${REPO} with the same version as core *before* tagging core."
+            exit 1
+          fi
+          echo "webui: ${REPO}@${REF}"
+
       - name: Clone webui repo
         uses: actions/checkout@v4
         with:
