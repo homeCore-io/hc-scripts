@@ -10,7 +10,14 @@ Work on `develop`, then PR to `main`.
 |---|---|
 | `.github/workflows/rust-ci.yml` | every Rust repo's `ci.yml` — fmt, clippy, test |
 | `.github/workflows/rust-release.yml` | every Rust repo's `release.yml` — build, Docker publish, appliance dispatch |
+| `.github/workflows/flutter-ci.yml` | `hc-web`'s `ci.yml` — analyze, format, test, build web |
 | `.github/workflows/cleanup-containers.yml` | GHCR retention |
+
+`flutter-ci.yml` is the Dart counterpart of `rust-ci.yml` and follows the same
+rules below — the pinned toolchain, the `permissions` block, the develop-red
+tracking issue. `hc-web` publishes its own image from its own `release.yml`
+(its `Dockerfile` lives in the repo, not in `homeCore-io/docker`), so there is no
+`flutter-release.yml`.
 
 ---
 
@@ -82,14 +89,20 @@ permissions:
   issues: write
 ```
 
-`rust-ci.yml` opens and closes a tracking issue when `develop` goes red, and a
-called workflow can never hold more permissions than its caller. The default
-workflow token is read-only, so without this the run dies at **startup** — zero
-jobs, no annotation, and a red X that explains nothing. CI was dead org-wide for
-weeks this way before anyone noticed, because `release.yml` had its own
-`permissions` block and kept working, which made it look like a code problem.
+Both `rust-ci.yml` and `flutter-ci.yml` open and close a tracking issue when
+`develop` goes red, and a called workflow can never hold more permissions than
+its caller. The default workflow token is read-only, so without this the run dies
+at **startup** — zero jobs, no annotation, and a red X that explains nothing. CI
+was dead org-wide for weeks this way before anyone noticed, because `release.yml`
+had its own `permissions` block and kept working, which made it look like a code
+problem.
 
-## The Rust toolchain is pinned, on purpose
+This binds on **every** caller, not just `ci.yml`. `hc-web`'s `release.yml` runs
+CI as a gate before it publishes an image, so it must grant `issues: write`
+alongside its `packages: write` — declare it at the workflow level, where it is
+hard to miss, rather than on the calling job.
+
+## The toolchain is pinned, on purpose
 
 `rust-ci.yml` pins `rust_version` (matching the `rust:<ver>-alpine` digest the
 Dockerfiles build from), so **CI compiles with the toolchain that actually
@@ -97,6 +110,25 @@ ships**. Do not pass `rust_version: "stable"` from a caller — that gates merge
 on a compiler you never ship with, and turns CI red on Rust release day with no
 code change.
 
+`flutter-ci.yml` pins `flutter_version` for the same reason, matching the
+`ghcr.io/cirruslabs/flutter:<ver>` tag `hc-web`'s Dockerfile builds from. Two
+wrinkles specific to Flutter:
+
+- **The pin tracks the image, not the newest SDK.** cirruslabs lags upstream —
+  3.44.4 exists as an SDK while 3.44.0 is the newest published image. The image
+  is what builds the artifact, so the image wins. Bump the Dockerfile's `FROM`
+  and `flutter-ci.yml`'s default together, or CI is no longer testing what ships.
+- **`flutter analyze` exits non-zero on *any* finding, including infos.** That is
+  deliberate — it is the only way a lint gets fixed rather than accumulating. CI
+  also runs `dart format --set-exit-if-changed`, the counterpart of
+  `cargo fmt --check`.
+
+`hc-web`'s Dockerfile used to build from `:stable`, which meant a tagged image
+could not be rebuilt from its own tag — the same reproducibility hole `webui_ref`
+and `docker_repo_ref` had, and fixed the same way.
+
 Each repo has a weekly `canary.yml` that runs the same checks against latest
 stable, on `develop`, and gates nothing. A red canary means *stable moved*, not
 *develop is broken* — read it as a preview of what the next pin bump will demand.
+(hc-web arrived with a deprecation from 3.41 that nothing had ever reported. That
+is exactly the bill a canary stops you paying all at once.)
