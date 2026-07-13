@@ -689,6 +689,21 @@ jobs:
         with:
           path: caller
 
+      # The Dockerfile and entrypoints that build the published image come from
+      # this repo at this ref, so it is part of the recipe. Callers pin it to the
+      # release tag; a missing tag means the release round tagged the component
+      # before tagging homeCore-io/docker. actions/checkout would report only
+      # "couldn't find remote ref", so say what actually needs doing.
+      - name: Pre-flight — docker repo ref exists
+        run: |
+          set -eu
+          REF='${{ inputs.docker_repo_ref }}'
+          if ! git ls-remote --exit-code "https://github.com/homeCore-io/docker" "${REF}" >/dev/null 2>&1; then
+            echo "::error::homeCore-io/docker has no ref '${REF}'. The Dockerfile and entrypoints for the published image are taken from that repo at this ref, so the release cannot proceed without it. If you are cutting a release, tag homeCore-io/docker with the same version *before* tagging this component."
+            exit 1
+          fi
+          echo "docker recipe: homeCore-io/docker@${REF}"
+
       - name: Checkout homeCore-io/docker
         uses: actions/checkout@v4
         with:
