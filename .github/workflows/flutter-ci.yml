@@ -1,0 +1,172 @@
+# Reusable CI workflow for homeCore Flutter/Dart components.
+#
+# The Dart counterpart to rust-ci.yml: analyze + test + build on the calling
+# repo. Each component wires its own .github/workflows/ci.yml that calls into
+# this one — fix the workflow here, every component picks it up.
+#
+# Caller example:
+#   # hc-web/.github/workflows/ci.yml
+#   name: CI
+#   on:
+#     push:
+#       branches: [main, develop]
+#     pull_request:
+#       branches: [main]
+#   permissions:
+#     contents: read
+#     issues: write
+#   jobs:
+#     ci:
+#       uses: homeCore-io/hc-scripts/.github/workflows/flutter-ci.yml@main
+
+name: flutter-ci
+
+# Opt JavaScript actions into Node.js 24 (default-on after 2026-06-02).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_call:
+    inputs:
+      flutter_version:
+        description: 'Flutter SDK to use. Pinned default — bump deliberately
+          rather than tracking "stable".
+
+          The pin is bounded by what ghcr.io/cirruslabs/flutter actually
+          publishes, because that image is what builds the shipped artifact and
+          CI must compile with the toolchain that ships. The registry lags the
+          SDK (3.44.4 exists upstream; 3.44.0 is the newest image), so this
+          tracks the image, not the newest SDK. Keep it equal to the
+          Dockerfile''s FROM tag.'
+        required: false
+        default: "3.44.0"
+        type: string
+      run_tests:
+        description: 'Run flutter test.'
+        required: false
+        default: true
+        type: boolean
+      run_build:
+        description: 'Run flutter build web --release. Catches the compile
+          errors that `analyze` does not — tree-shaking, deferred imports, and
+          the conditional dart:js_interop imports the SSE client relies on.'
+        required: false
+        default: true
+        type: boolean
+      working_directory:
+        description: 'Directory holding pubspec.yaml. Defaults to the repo root.'
+        required: false
+        default: '.'
+        type: string
+      ref:
+        description: 'Git ref to check out. Empty (the default) means the ref
+          that triggered the run — normal CI behavior. Scheduled runs always
+          fire on the default branch, so the stable-canary callers pass
+          "develop" to check the branch work actually lands on.'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  ci:
+    name: analyze + test + build
+    runs-on: ubuntu-latest
+    # issues:write so the failure/recovery notify steps below can open and close
+    # a tracking issue when develop goes red. Mirrors rust-ci.yml.
+    permissions:
+      contents: read
+      issues: write
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Flutter ${{ inputs.flutter_version }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          # "stable" is the channel; the version above pins within it. The canary
+          # caller passes flutter_version: stable, which resolves to the newest
+          # stable release rather than a pin.
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      # `flutter analyze` exits non-zero on ANY finding — including infos — so
+      # this gates on lints as well as errors. That is deliberate: it is the
+      # only way a lint gets fixed rather than accumulating.
+      - name: flutter analyze
+        run: flutter analyze
+
+      - name: dart format --set-exit-if-changed
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: flutter test
+        if: ${{ inputs.run_tests }}
+        run: flutter test
+
+      # Analyze does not catch everything the web compiler does. In particular
+      # the conditional `dart:js_interop` import used for EventSource only fails
+      # here, never in analysis or in VM tests.
+      - name: flutter build web --release
+        if: ${{ inputs.run_build }}
+        run: flutter build web --release
+
+      # ── Develop CI is otherwise unwatched (no branch protection, no
+      # required-checks gate), so red status can rot for days. Open a single
+      # tracking issue per repo when develop fails and close it when develop
+      # recovers. Pull requests and main pushes skip this — PR red is already
+      # visible to the author, and main red would block merges anyway.
+      #
+      # Kept byte-identical to rust-ci.yml's steps on purpose: one behaviour for
+      # the org, whatever language a repo happens to be written in.
+      - name: Open tracking issue on develop failure
+        if: failure() && github.ref == 'refs/heads/develop' && github.event_name == 'push'
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -e
+          TITLE="CI failing on develop"
+          BODY="Develop CI failed: ${RUN_URL} (sha ${SHA})
+
+          This issue auto-closes when develop CI passes again."
+          # Match by title — avoids requiring a ci-failure label to exist.
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+              --search "\"${TITLE}\" in:title" \
+              --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$REPO" \
+                  --body "Run failed again: ${RUN_URL} (sha ${SHA})"
+          else
+              gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Close tracking issue on develop recovery
+        if: success() && github.ref == 'refs/heads/develop' && github.event_name == 'push'
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -e
+          TITLE="CI failing on develop"
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+              --search "\"${TITLE}\" in:title" \
+              --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+              gh issue close "$EXISTING" --repo "$REPO" \
+                  --comment "Develop CI green again (sha ${SHA})."
+          fi
