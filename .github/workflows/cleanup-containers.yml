@@ -35,18 +35,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The images the project still publishes. Plugins are no longer built
+        # as container images (they ship as signed registry artifacts), so the
+        # 10 plugin packages are gone from here.
         package:
           - hc-core
-          - hc-hue
-          - hc-yolink
-          - hc-lutron
-          - hc-caseta
-          - hc-sonos
-          - hc-ecowitt
-          - hc-zwave
-          - hc-isy
-          - hc-wled
-          - hc-thermostat
+          - homecore-appliance
+          - hc-web
     steps:
       - name: Compute deletable version IDs
         id: compute
