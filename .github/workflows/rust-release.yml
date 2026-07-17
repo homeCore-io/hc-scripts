@@ -929,11 +929,14 @@ jobs:
           OS="linux"; ARCH="x86_64"; PLATFORM="${OS}-${ARCH}"
 
           # Pull the binary out of the release .tar.gz (homecore/plugins/<name>/<bin>).
-          GZ="$(ls artifacts/*/${BIN}-${VER}-${PLATFORM}.tar.gz 2>/dev/null | head -1)"
-          [ -n "$GZ" ] || GZ="$(ls artifacts/**/${BIN}-*.tar.gz 2>/dev/null | head -1)"
-          [ -n "$GZ" ] || { echo "::error::no ${BIN} .tar.gz artifact found"; exit 1; }
+          # Version-agnostic match: build-archive.sh names it <bin>-<TAG>-<platform>
+          # (TAG keeps the leading v). `find -print -quit` returns 0 on no match
+          # and never SIGPIPEs a piped head — both of which killed the old `ls`
+          # under set -e/pipefail.
+          GZ="$(find artifacts -type f -name "${BIN}-*-${PLATFORM}.tar.gz" -print -quit)"
+          [ -n "$GZ" ] || { echo "::error::no ${BIN}-*-${PLATFORM}.tar.gz artifact found"; exit 1; }
           work="$(mktemp -d)"; tar -xzf "$GZ" -C "$work"
-          binpath="$(find "$work" -type f -name "$BIN" | head -1)"
+          binpath="$(find "$work" -type f -name "$BIN" -print -quit)"
           [ -n "$binpath" ] || { echo "::error::binary $BIN not in $GZ"; exit 1; }
 
           # Assemble plugin.<id>-<ver>-<platform>.tar.zst = plugin.toml + binary.
