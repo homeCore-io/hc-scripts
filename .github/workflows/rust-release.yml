@@ -99,6 +99,16 @@ on:
         required: false
         default: 'main'
         type: string
+      publish_registry:
+        description: 'Plugins only: on a tag release, repackage the binary as a tar.zst, attach it to the GitHub Release, and notify the plugin registry to index it. Needs the REGISTRY_DISPATCH_PAT secret.'
+        required: false
+        default: false
+        type: boolean
+      registry_repo:
+        description: 'owner/name of the registry repo to notify when publish_registry=true.'
+        required: false
+        default: 'homeCore-io/registry'
+        type: string
       fast:
         description: >-
           Skip the aarch64 build (matrix + docker-publish platforms) to halve
@@ -879,3 +889,90 @@ jobs:
           {
             echo "Dispatched homeCore-io/docker → appliance-release.yml for ${{ inputs.image_name || inputs.binary_name }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Registry publish — plugins only. Repackage the built binary as the tar.zst
+  # the plugin registry serves (plugin.toml + binary — the exact format core's
+  # installer unpacks), attach it to the GitHub Release, and notify the registry
+  # to index it. This is how plugins are distributed now: signed registry
+  # artifacts pulled at runtime, not container images.
+  # ---------------------------------------------------------------------------
+  registry-publish:
+    name: Publish to plugin registry
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    if: >-
+      always() &&
+      needs.release.result == 'success' &&
+      inputs.publish_registry == true &&
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package tar.zst and attach to release
+        id: pkg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"          # v0.2.0
+          VER="${TAG#v}"                          # 0.2.0
+          BIN="${{ inputs.binary_name }}"         # hc-wled
+          BARE="${BIN#hc-}"                       # wled
+          ID="plugin.${BARE}"
+          NAME="$(echo "$BARE" | sed 's/.*/\u&/')"   # Wled (cosmetic; UI humanizes the id)
+          OS="linux"; ARCH="x86_64"; PLATFORM="${OS}-${ARCH}"
+
+          # Pull the binary out of the release .tar.gz (homecore/plugins/<name>/<bin>).
+          GZ="$(ls artifacts/*/${BIN}-${VER}-${PLATFORM}.tar.gz 2>/dev/null | head -1)"
+          [ -n "$GZ" ] || GZ="$(ls artifacts/**/${BIN}-*.tar.gz 2>/dev/null | head -1)"
+          [ -n "$GZ" ] || { echo "::error::no ${BIN} .tar.gz artifact found"; exit 1; }
+          work="$(mktemp -d)"; tar -xzf "$GZ" -C "$work"
+          binpath="$(find "$work" -type f -name "$BIN" | head -1)"
+          [ -n "$binpath" ] || { echo "::error::binary $BIN not in $GZ"; exit 1; }
+
+          # Assemble plugin.<id>-<ver>-<platform>.tar.zst = plugin.toml + binary.
+          stage="$(mktemp -d)"
+          install -m755 "$binpath" "$stage/$BIN"
+          printf 'id = "%s"\nname = "%s"\nversion = "%s"\nbinary = "%s"\n' \
+            "$ID" "$NAME" "$VER" "$BIN" > "$stage/plugin.toml"
+          ART="${ID}-${VER}-${PLATFORM}.tar.zst"
+          tar --zstd -cf "$ART" -C "$stage" plugin.toml "$BIN"
+          SHA="$(sha256sum "$ART" | cut -d' ' -f1)"
+          SIZE="$(stat -c%s "$ART")"
+
+          gh release upload "$TAG" "$ART" --clobber --repo "$GITHUB_REPOSITORY"
+
+          {
+            echo "id=$ID"; echo "name=$NAME"; echo "version=$VER"
+            echo "os=$OS"; echo "arch=$ARCH"; echo "sha256=$SHA"; echo "size=$SIZE"
+            echo "url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ART}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Notify registry to index it
+        env:
+          # Cross-repo dispatch needs a PAT with actions:write on the registry
+          # repo; the per-repo GITHUB_TOKEN can't reach another repository.
+          GH_TOKEN: ${{ secrets.REGISTRY_DISPATCH_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::REGISTRY_DISPATCH_PAT not set; registry not notified. Artifact is attached to the release — dispatch manually via the registry's Publish workflow."
+            exit 0
+          fi
+          gh api "repos/${{ inputs.registry_repo }}/dispatches" \
+            -f event_type=publish-plugin \
+            -F "client_payload[id]=${{ steps.pkg.outputs.id }}" \
+            -F "client_payload[name]=${{ steps.pkg.outputs.name }}" \
+            -F "client_payload[version]=${{ steps.pkg.outputs.version }}" \
+            -F "client_payload[os]=${{ steps.pkg.outputs.os }}" \
+            -F "client_payload[arch]=${{ steps.pkg.outputs.arch }}" \
+            -F "client_payload[url]=${{ steps.pkg.outputs.url }}" \
+            -F "client_payload[sha256]=${{ steps.pkg.outputs.sha256 }}" \
+            -F "client_payload[size]=${{ steps.pkg.outputs.size }}"
+          echo "Notified ${{ inputs.registry_repo }}: ${{ steps.pkg.outputs.id }} ${{ steps.pkg.outputs.version }}"
