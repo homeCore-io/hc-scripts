@@ -100,7 +100,13 @@ on:
         default: 'main'
         type: string
       publish_registry:
-        description: 'Plugins only: on a tag release, repackage the binary as a tar.zst, attach it to the GitHub Release, and notify the plugin registry to index it. Needs the REGISTRY_DISPATCH_PAT secret.'
+        description: >-
+          Plugins only: on a tag release, repackage the binary as a tar.zst,
+          attach it to the GitHub Release, notify the plugin registry, and then
+          verify the entry actually reached the served index. REQUIRES the
+          REGISTRY_DISPATCH_PAT secret — turning this on is a request to
+          publish, so a release that cannot dispatch fails rather than passing
+          with a warning.
         required: false
         default: false
         type: boolean
@@ -977,19 +983,32 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Notify registry to index it
-        id: notify
         env:
           # Cross-repo dispatch needs a PAT with actions:write on the registry
           # repo; the per-repo GITHUB_TOKEN can't reach another repository.
           GH_TOKEN: ${{ secrets.REGISTRY_DISPATCH_PAT }}
         run: |
           set -euo pipefail
+          # A missing secret used to warn and pass. That left the one way a
+          # release could still report success while publishing nothing — the
+          # same "green but not installable" failure this job now exists to
+          # prevent, only quieter, and across every repo at once if the secret
+          # were ever removed. publish_registry=true is a request to publish;
+          # if that cannot happen, the release did not do what it was asked.
+          #
+          # An expired PAT already failed here, because `gh api` returns
+          # non-zero under `set -e`. Absent now fails the same way.
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::REGISTRY_DISPATCH_PAT not set; registry not notified. Artifact is attached to the release — dispatch manually via the registry's Publish workflow."
-            echo "dispatched=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::REGISTRY_DISPATCH_PAT is not set, so ${{ inputs.registry_repo }} cannot be notified and this plugin will NOT be installable — but publish_registry is true, which asked for exactly that. The build and its release artifact are fine; only indexing is blocked."
+            echo "Expected an org-level secret visible to this repo. Check with:"
+            echo "  gh api /orgs/\${ORG}/actions/secrets --jq '.secrets[] | \"\\(.name) visibility=\\(.visibility)\"'   # needs admin:org"
+            echo "Set it with:"
+            echo "  gh secret set REGISTRY_DISPATCH_PAT --org \${ORG} --visibility all"
+            echo "The PAT needs actions:write on ${{ inputs.registry_repo }}; the per-repo GITHUB_TOKEN cannot reach another repository."
+            echo "To publish this build without re-running the release:"
+            echo "  gh workflow run publish.yml --repo ${{ inputs.registry_repo }} -f id=${{ steps.pkg.outputs.id }} -f name='${{ steps.pkg.outputs.name }}' -f version=${{ steps.pkg.outputs.version }} -f os=${{ steps.pkg.outputs.os }} -f arch=${{ steps.pkg.outputs.arch }} -f url=${{ steps.pkg.outputs.url }} -f sha256=${{ steps.pkg.outputs.sha256 }} -f size=${{ steps.pkg.outputs.size }}"
+            exit 1
           fi
-          echo "dispatched=true" >> "$GITHUB_OUTPUT"
           gh api "repos/${{ inputs.registry_repo }}/dispatches" \
             -f event_type=publish-plugin \
             -F "client_payload[id]=${{ steps.pkg.outputs.id }}" \
@@ -1016,7 +1035,6 @@ jobs:
       # installs from Pages, so that is where "installable" becomes true. It
       # trails the commit by a deploy, which the timeout accounts for.
       - name: Verify it reached the registry index
-        if: steps.notify.outputs.dispatched == 'true'
         env:
           INDEX_URL: ${{ inputs.registry_index_url }}
           TIMEOUT_SECS: ${{ inputs.registry_verify_timeout_secs }}
