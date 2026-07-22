@@ -109,6 +109,25 @@ on:
         required: false
         default: 'homeCore-io/registry'
         type: string
+      registry_index_url:
+        description: >-
+          Served index the release verifies itself against. This is the URL an
+          appliance actually fetches, not the repo file — publishing is only
+          done when an operator could install the result.
+        required: false
+        default: 'https://homeCore-io.github.io/registry/index.json'
+        type: string
+      registry_verify_timeout_secs:
+        description: >-
+          How long to wait for the dispatched publish to land in the served
+          index before failing the release. Sized for a whole-fleet tag, not a
+          single one: publishes run concurrently but their Pages deploys
+          serialize on the `pages` concurrency group, so the last plugin of ten
+          waits out every deploy ahead of it. Tagging the fleet at once is
+          precisely what exposed this gap, so the default must survive it.
+        required: false
+        default: 900
+        type: number
       fast:
         description: >-
           Skip the aarch64 build (matrix + docker-publish platforms) to halve
@@ -958,6 +977,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Notify registry to index it
+        id: notify
         env:
           # Cross-repo dispatch needs a PAT with actions:write on the registry
           # repo; the per-repo GITHUB_TOKEN can't reach another repository.
@@ -966,8 +986,10 @@ jobs:
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::warning::REGISTRY_DISPATCH_PAT not set; registry not notified. Artifact is attached to the release — dispatch manually via the registry's Publish workflow."
+            echo "dispatched=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "dispatched=true" >> "$GITHUB_OUTPUT"
           gh api "repos/${{ inputs.registry_repo }}/dispatches" \
             -f event_type=publish-plugin \
             -F "client_payload[id]=${{ steps.pkg.outputs.id }}" \
@@ -979,3 +1001,90 @@ jobs:
             -F "client_payload[sha256]=${{ steps.pkg.outputs.sha256 }}" \
             -F "client_payload[size]=${{ steps.pkg.outputs.size }}"
           echo "Notified ${{ inputs.registry_repo }}: ${{ steps.pkg.outputs.id }} ${{ steps.pkg.outputs.version }}"
+
+      # Phase 6: make a release prove it published.
+      #
+      # Dispatching is not publishing. The step above ends at "notified" and
+      # never looks at the outcome, which is exactly how ten green releases on
+      # 2026-07-21 left six plugins missing from the index — four publish runs
+      # cancelled, two rejected on push, and nothing anywhere reported a
+      # problem. A release that cannot show its artifact in the index has not
+      # finished, so this fails the job instead of leaving it to be noticed
+      # weeks later.
+      #
+      # Polls the *served* index rather than the repo file: an appliance
+      # installs from Pages, so that is where "installable" becomes true. It
+      # trails the commit by a deploy, which the timeout accounts for.
+      - name: Verify it reached the registry index
+        if: steps.notify.outputs.dispatched == 'true'
+        env:
+          INDEX_URL: ${{ inputs.registry_index_url }}
+          TIMEOUT_SECS: ${{ inputs.registry_verify_timeout_secs }}
+          ID: ${{ steps.pkg.outputs.id }}
+          NAME: ${{ steps.pkg.outputs.name }}
+          VER: ${{ steps.pkg.outputs.version }}
+          OS_: ${{ steps.pkg.outputs.os }}
+          ARCH: ${{ steps.pkg.outputs.arch }}
+          SHA: ${{ steps.pkg.outputs.sha256 }}
+          REGISTRY_REPO: ${{ inputs.registry_repo }}
+          URL: ${{ steps.pkg.outputs.url }}
+          SIZE: ${{ steps.pkg.outputs.size }}
+        run: |
+          set -uo pipefail
+          echo "Waiting for ${ID} ${VER} (${OS_}/${ARCH}) in ${INDEX_URL}"
+
+          deadline=$(( SECONDS + TIMEOUT_SECS ))
+          attempt=0
+          seen_sha=""
+          while :; do
+            attempt=$(( attempt + 1 ))
+            # Pages sits behind a CDN, so a plain GET can be served a copy from
+            # before the deploy. Bust it per attempt, or this polls a cache and
+            # times out against an index that already has the entry.
+            body="$(curl -fsSL --max-time 30 \
+                      -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+                      "${INDEX_URL}?cb=${GITHUB_RUN_ID}-${attempt}" 2>/dev/null)"
+
+            if [ -n "${body:-}" ]; then
+              # The entry for our exact coordinates, if the index has one.
+              entry="$(printf '%s' "$body" | jq -c --arg id "$ID" --arg v "$VER" \
+                        --arg os "$OS_" --arg arch "$ARCH" '
+                          .plugins[]? | select(.id == $id)
+                          | .versions[]? | select(.version == $v)
+                          | .artifacts[]? | select(.os == $os and .arch == $arch)
+                        ' 2>/dev/null | head -1)"
+
+              if [ -n "${entry:-}" ]; then
+                got="$(printf '%s' "$entry" | jq -r '.sha256 // ""')"
+                if [ "$got" = "$SHA" ]; then
+                  echo "Published and verified after ${attempt} attempt(s), $(( SECONDS ))s."
+                  echo "  $entry"
+                  exit 0
+                fi
+                # Present, but naming different bytes. Do NOT fail here: on a
+                # re-run of an existing tag the index still holds the previous
+                # build's artifact for these exact coordinates while this run's
+                # publish is still in flight, and a musl rebuild is not
+                # byte-identical. Failing on sight would call that a conflict
+                # when waiting resolves it. Remember it and keep polling; if it
+                # never converges the timeout below reports this rather than a
+                # bare "never appeared", which would be the wrong diagnosis.
+                if [ "$got" != "$seen_sha" ]; then
+                  echo "  attempt ${attempt}: index has sha256 ${got}, waiting for ${SHA}"
+                  seen_sha="$got"
+                fi
+              fi
+            fi
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              if [ -n "$seen_sha" ]; then
+                echo "::error::${ID} ${VER} (${OS_}/${ARCH}) is in ${INDEX_URL} with sha256 ${seen_sha}, and did not become ${SHA} within ${TIMEOUT_SECS}s (${attempt} attempts). These coordinates already name different bytes, so this is not a missing publish — something else holds that (id, version, os, arch). Check both artifacts before overwriting either; re-publishing will replace what is there."
+              else
+                echo "::error::${ID} ${VER} (${OS_}/${ARCH}) never appeared in ${INDEX_URL} within ${TIMEOUT_SECS}s (${attempt} attempts). The release and its artifact are fine — indexing is what failed, so the plugin is NOT installable. Check the Publish runs at https://github.com/${REGISTRY_REPO}/actions, then re-publish by hand:"
+              fi
+              echo "  gh workflow run publish.yml --repo ${REGISTRY_REPO} -f id=${ID} -f name='${NAME}' -f version=${VER} -f os=${OS_} -f arch=${ARCH} -f url=${URL} -f sha256=${SHA} -f size=${SIZE}"
+              exit 1
+            fi
+
+            sleep 20
+          done
