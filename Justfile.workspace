@@ -12,7 +12,7 @@
 core_dir   := "core"
 plugin_dir := "plugins"
 
-plugins := "hc-caseta hc-ecowitt hc-hue hc-isy hc-lutron hc-sonos hc-wled hc-yolink hc-zwave"
+plugins := "hc-caseta hc-ecowitt hc-hue hc-isy hc-lutron hc-roku hc-sonos hc-wled hc-yolink hc-zwave"
 
 # ── Full CI ──────────────────────────────────────────────────────────────────
 

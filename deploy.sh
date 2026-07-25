@@ -45,6 +45,7 @@
 #   hc-isy        ISY994 / Polisy / eISY bridge
 #   hc-caseta     Lutron Caseta Pro bridge
 #   hc-ecowitt    Ecowitt weather station gateway
+#   hc-roku       Roku player / Roku TV (ECP)
 #
 # OPTIONS
 #   --all           Build and install all components (default when none specified)
@@ -104,6 +105,7 @@ PLUGINS=(
     hc-isy
     hc-ecowitt
     hc-thermostat
+    hc-roku
 )
 
 declare -A PLUGIN_SRC_DIR=(
@@ -117,6 +119,7 @@ declare -A PLUGIN_SRC_DIR=(
     [hc-isy]="$WORKSPACE_ROOT/plugins/hc-isy"
     [hc-ecowitt]="$WORKSPACE_ROOT/plugins/hc-ecowitt"
     [hc-thermostat]="$WORKSPACE_ROOT/plugins/hc-thermostat"
+    [hc-roku]="$WORKSPACE_ROOT/plugins/hc-roku"
 )
 
 ALL_COMPONENTS=(homecore hc-web "${PLUGINS[@]}")
