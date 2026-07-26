@@ -28,6 +28,12 @@ remote = "git@github.com:homeCore-io/hc-lutron.git"
 
 [[repo]]
 role   = "plugin"
+name   = "hc-roku"
+path   = "plugins/hc-roku"
+remote = "git@github.com:homeCore-io/hc-roku.git"
+
+[[repo]]
+role   = "plugin"
 name   = "hc-sonos"
 path   = "plugins/hc-sonos"
 remote = "git@github.com:homeCore-io/hc-sonos.git"

@@ -1,12 +1,28 @@
 # Reusable release workflow for homeCore Rust components.
 #
-# Builds x86_64-unknown-linux-musl + aarch64-unknown-linux-musl statically
-# linked binaries, packages each into a tar.gz with config example +
-# README + any extra files, sha-256 sidecars, and uploads as Actions
-# artifacts. On a `v*` tag push, additionally creates a GitHub Release.
+# Builds a statically linked x86_64-unknown-linux-musl binary, packages it into
+# a tar.gz with config example + README + any extra files, sha-256 sidecar, and
+# uploads as an Actions artifact. On a `v*` tag push, additionally creates a
+# GitHub Release; optionally publishes a container image (core) or a signed
+# registry artifact (plugins).
 #
 # `workflow_dispatch` triggers a build only — no Release is created.
 # This is what lets you validate the whole pipeline before tagging.
+#
+# One component, one artifact. This workflow used to do considerably more:
+# clone hc-web-leptos and compile it to WASM so hc-core could bake in a UI;
+# assemble an "appliance" tarball merging core with every plugin's release;
+# mirror a `latest` git tag purely so that assembly could download from it; and
+# cascade to homeCore-io/docker to rebuild the appliance image. None of that
+# describes the product any more — the UI is hc-web (its own image), and plugins
+# install at runtime from the signed registry — so it is gone rather than left
+# switched off.
+#
+# amd64 only, deliberately. The aarch64 matrix entry existed but had been
+# hardcoded off with `true &&` overrides for long enough that no arm64 artifact
+# has shipped in months, while the `fast` input still advertised a toggle that
+# controlled nothing. Restoring multi-arch is a matter of re-adding the matrix
+# entry and the QEMU steps; leaving a dead flag in place was the worse option.
 #
 # Caller example:
 #   # core/.github/workflows/release.yml
@@ -33,11 +49,6 @@ name: rust-release
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
-# TEMPORARY (v0.1.0 release window): force every tag-push build to skip
-# aarch64 — multi-arch will be a deliberate later run. Search for
-# `# FORCE_FAST` markers below; revert by changing each `true` back to
-# `inputs.fast` (and `false` back to `!inputs.fast` at the QEMU gate).
-
 on:
   workflow_call:
     inputs:
@@ -51,7 +62,15 @@ on:
         default: ''
         type: string
       extra_files:
-        description: 'Newline-separated list of additional paths (files or directories) to include at the archive root.'
+        description: >-
+          ACCEPTED AND IGNORED. It has never been wired to anything — nothing in
+          this workflow reads it and build-archive.sh has no matching flag. Core
+          passes `config/profiles` and the systemd unit through it and they do
+          land in the archive, but because `stage_core` in build-archive.sh
+          copies those two paths by name, not because this input asked for them.
+          A caller adding a third path here would get silence.
+          Kept only so existing callers keep parsing; add paths to
+          build-archive.sh's stage_core instead. Remove once no caller passes it.
         required: false
         default: ''
         type: string
@@ -65,7 +84,7 @@ on:
         type: string
       # ─── Docker image publishing (opt-in) ────────────────────────────────
       publish_docker_image:
-        description: 'Publish a multi-arch image to ghcr.io after build. Caller release.yml must grant packages: write.'
+        description: 'Publish an image to ghcr.io after build. Caller release.yml must grant packages: write.'
         required: false
         default: false
         type: boolean
@@ -84,23 +103,14 @@ on:
         required: false
         default: 'main'
         type: string
-      bundle_webui:
-        description: 'Clone webui_repo + run `trunk build --release` and bundle dist/ as ./ui/ in the docker context. hc-core only.'
-        required: false
-        default: false
-        type: boolean
-      webui_repo:
-        description: 'Repo to clone when bundle_webui=true (owner/name).'
-        required: false
-        default: 'homeCore-io/hc-web-leptos'
-        type: string
-      webui_ref:
-        description: 'Branch/tag of webui_repo to clone.'
-        required: false
-        default: 'main'
-        type: string
       publish_registry:
-        description: 'Plugins only: on a tag release, repackage the binary as a tar.zst, attach it to the GitHub Release, and notify the plugin registry to index it. Needs the REGISTRY_DISPATCH_PAT secret.'
+        description: >-
+          Plugins only: on a tag release, repackage the binary as a tar.zst,
+          attach it to the GitHub Release, notify the plugin registry, and then
+          verify the entry actually reached the served index. REQUIRES the
+          REGISTRY_DISPATCH_PAT secret — turning this on is a request to
+          publish, so a release that cannot dispatch fails rather than passing
+          with a warning.
         required: false
         default: false
         type: boolean
@@ -109,15 +119,25 @@ on:
         required: false
         default: 'homeCore-io/registry'
         type: string
-      fast:
+      registry_index_url:
         description: >-
-          Skip the aarch64 build (matrix + docker-publish platforms) to halve
-          runtime. Defaults to false so tag pushes always get full multi-arch.
-          Pass true on workflow_dispatch for fast pre-release iteration —
-          published images will be amd64-only until the next non-fast run.
+          Served index the release verifies itself against. This is the URL an
+          hub actually fetches, not the repo file — publishing is only
+          done when an operator could install the result.
         required: false
-        default: false
-        type: boolean
+        default: 'https://homeCore-io.github.io/registry/index.json'
+        type: string
+      registry_verify_timeout_secs:
+        description: >-
+          How long to wait for the dispatched publish to land in the served
+          index before failing the release. Sized for a whole-fleet tag, not a
+          single one: publishes run concurrently but their Pages deploys
+          serialize on the `pages` concurrency group, so the last plugin of ten
+          waits out every deploy ahead of it. Tagging the fleet at once is
+          precisely what exposed this gap, so the default must survive it.
+        required: false
+        default: 900
+        type: number
       refresh_deps:
         description: >-
           Run `cargo update` for the in-org git deps (plugin-sdk-rs, hc-types,
@@ -128,109 +148,25 @@ on:
         required: false
         default: false
         type: boolean
-      # ─── Appliance assembly (opt-in, tag-push only) ──────────────────────
-      assemble_appliance:
-        description: >-
-          Assemble an appliance archive (homecore + every plugin) per platform.
-          Only fires on tag push. Plugin tarballs are downloaded from each
-          plugin repo's matching GitHub Release page — every plugin in the
-          list must have a release with the same tag for assembly to succeed.
-        required: false
-        default: false
-        type: boolean
-      appliance_plugins:
-        description: >-
-          Newline-separated list of plugin repo names (under homeCore-io)
-          to include in the appliance, e.g. `hc-hue\nhc-yolink\n...`.
-          Required when assemble_appliance=true.
-        required: false
-        default: ''
-        type: string
 
 jobs:
   # ---------------------------------------------------------------------------
-  # WebUI build — runs once when bundle_webui=true. Produces a single
-  # webui-dist artifact consumed by the build matrix, appliance job, and
-  # docker-publish. Trunk-built WASM is platform-independent so one
-  # build serves every arch.
-  # ---------------------------------------------------------------------------
-  webui-build:
-    name: WebUI build
-    runs-on: ubuntu-latest
-    if: inputs.bundle_webui == true
-    steps:
-      # actions/checkout fails on a missing ref with "couldn't find remote ref",
-      # which does not tell a releaser what to do about it. Callers pin webui_ref
-      # to the release tag, so the usual cause is tagging core before tagging the
-      # UI — say that.
-      - name: Pre-flight — webui ref exists
-        run: |
-          set -eu
-          REPO='${{ inputs.webui_repo }}'
-          REF='${{ inputs.webui_ref }}'
-          if ! git ls-remote --exit-code "https://github.com/${REPO}" "${REF}" >/dev/null 2>&1; then
-            echo "::error::${REPO} has no ref '${REF}'. The web UI is not built by its own repo — it is cloned and built here, so the release cannot proceed without this ref. If you are cutting a release, tag ${REPO} with the same version as core *before* tagging core."
-            exit 1
-          fi
-          echo "webui: ${REPO}@${REF}"
-
-      - name: Clone webui repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.webui_repo }}
-          ref: ${{ inputs.webui_ref }}
-          path: webui
-
-      - name: Install Rust + wasm32
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install trunk (prebuilt)
-        run: |
-          set -eux
-          TRUNK_VERSION=v0.21.7
-          curl -fsSL \
-              "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-              | sudo tar -xzf - -C /usr/local/bin trunk
-          trunk --version
-
-      - name: Build (release)
-        working-directory: webui
-        run: trunk build --release
-
-      - name: Upload webui-dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: webui-dist
-          path: webui/dist
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # Build matrix — runs on every workflow_dispatch and tag push.
+  # Build — runs on every workflow_dispatch and tag push.
+  #
+  # Still a matrix with one entry. Keeping the shape means restoring arm64 is
+  # adding a line here plus the QEMU steps, rather than rediscovering how the
+  # per-arch artifact names feed the Dockerfile's TARGETARCH selection.
   # ---------------------------------------------------------------------------
   build:
     name: ${{ matrix.platform }}
-    needs: webui-build
-    # webui-build is skipped when bundle_webui=false (plugin builds);
-    # `always() && (success || skipped)` keeps the build job alive in
-    # both cases.
-    if: |
-      always() &&
-      (needs.webui-build.result == 'success' || needs.webui-build.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Conditional matrix — fast=true drops the aarch64 entry. Multiline
-      # YAML expression so the JSON literals stay readable.
-      # FORCE_FAST: `true &&` forces single-arch; revert to `inputs.fast`.
       matrix:
-        include: >-
-          ${{
-            true
-            && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"}]')
-            || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64","arch":"amd64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64","arch":"arm64"}]')
-          }}
+        include:
+          - target: x86_64-unknown-linux-musl
+            platform: linux-x86_64
+            arch: amd64
 
     steps:
       - name: Checkout
@@ -258,10 +194,11 @@ jobs:
           fi
           echo "Tag v$TAG matches Cargo.toml version $PKG_VERSION ✓"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/${{ matrix.arch }}
+      # No QEMU: the only target is amd64 and the runner is amd64, so the
+      # rust:alpine build container runs natively. Re-add
+      # `docker/setup-qemu-action@v3` here if an arm64 matrix entry comes back —
+      # without it the cross-arch `docker run --platform` below fails with
+      # "exec format error".
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -278,7 +215,7 @@ jobs:
         run: |
           set -eux
           # Build inside rust:alpine for the target arch — same toolchain
-          # as the appliance image, avoids host musl-gcc setup, and makes
+          # as the published image, avoids host musl-gcc setup, and makes
           # x86_64 + aarch64 use the same code path.
           #
           # Map rust_version to the correct Docker tag:
@@ -382,13 +319,6 @@ jobs:
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Download webui-dist
-        if: inputs.bundle_webui == true
-        uses: actions/download-artifact@v4
-        with:
-          name: webui-dist
-          path: webui-dist
-
       - name: Assemble archive
         id: package
         run: |
@@ -410,18 +340,12 @@ jobs:
               KIND_ARGS="--kind plugin --name ${{ inputs.binary_name }}"
           fi
 
-          UI_DIST_ARG=""
-          if [ "${{ inputs.bundle_webui }}" = "true" ] && [ -d webui-dist ]; then
-              UI_DIST_ARG="--ui-dist webui-dist"
-          fi
-
           .hc-scripts/build-archive.sh \
               $KIND_ARGS \
               --target "${{ matrix.target }}" \
               --version "${{ steps.ver.outputs.version }}" \
               --source "$PWD" \
               --bin "$BIN_PATH" \
-              $UI_DIST_ARG \
               --out dist
 
           # Capture the produced archive path for the upload step.
@@ -439,126 +363,13 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Appliance — opt-in, tag-push only. Downloads each plugin's matching
-  # tarball from its own GitHub Release page and merges into a single
-  # homecore-appliance archive per platform.
-  # ---------------------------------------------------------------------------
-  appliance:
-    name: Appliance ${{ matrix.platform }}
-    needs: build
-    runs-on: ubuntu-latest
-    if: >-
-      inputs.assemble_appliance == true &&
-      github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      # FORCE_FAST: `true &&` forces single-arch; revert to `inputs.fast`.
-      matrix:
-        include: >-
-          ${{
-            true
-            && fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"}]')
-            || fromJson('[{"target":"x86_64-unknown-linux-musl","platform":"linux-x86_64"},{"target":"aarch64-unknown-linux-musl","platform":"linux-aarch64"}]')
-          }}
-
-    steps:
-      - name: Checkout caller
-        uses: actions/checkout@v4
-        with:
-          path: caller
-
-      - name: Fetch hc-scripts
-        uses: actions/checkout@v4
-        with:
-          repository: homeCore-io/hc-scripts
-          ref: main
-          path: hc-scripts
-
-      - name: Download core archive (this build)
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.platform }}
-          path: core-artifacts
-
-      - name: Extract core binary into expected layout
-        run: |
-          set -eux
-          # Extract the core archive so build-archive.sh can find the
-          # binary at target/<triple>/release/homecore.
-          tar -C "$RUNNER_TEMP" -xf "core-artifacts/homecore-core-${GITHUB_REF_NAME}-${{ matrix.platform }}.tar.gz"
-          mkdir -p "caller/target/${{ matrix.target }}/release"
-          cp "$RUNNER_TEMP/homecore/bin/homecore" \
-             "caller/target/${{ matrix.target }}/release/homecore"
-
-      - name: Download plugin tarballs from each plugin's `latest` release
-        env:
-          PLATFORM: ${{ matrix.platform }}
-          PLUGINS: ${{ inputs.appliance_plugins }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eux
-          # Each plugin maintains a `latest` release that mirrors its most
-          # recent stable tag (force-updated by publish-latest below). Pulling
-          # by `latest` here decouples plugin versioning from core/appliance
-          # cadence — plugins ship at their own pace.
-          mkdir -p plugin-fragments
-          while IFS= read -r plugin; do
-            [ -z "$plugin" ] && continue
-            echo "==> downloading $plugin's latest *-${PLATFORM}.tar.gz"
-            gh release download latest \
-                --repo "homeCore-io/${plugin}" \
-                --pattern "*-${PLATFORM}.tar.gz" \
-                --dir plugin-fragments
-          done <<EOF
-          ${PLUGINS}
-          EOF
-          ls -la plugin-fragments
-
-      - name: Download webui-dist
-        if: inputs.bundle_webui == true
-        uses: actions/download-artifact@v4
-        with:
-          name: webui-dist
-          path: webui-dist
-
-      - name: Assemble appliance archive
-        run: |
-          set -eux
-          UI_DIST_ARG=""
-          if [ "${{ inputs.bundle_webui }}" = "true" ] && [ -d webui-dist ]; then
-              UI_DIST_ARG="--ui-dist $PWD/webui-dist"
-          fi
-
-          hc-scripts/build-archive.sh \
-              --kind appliance \
-              --target "${{ matrix.target }}" \
-              --version "${{ github.ref_name }}" \
-              --source "$PWD/caller" \
-              --plugin-fragments-dir "$PWD/plugin-fragments" \
-              $UI_DIST_ARG \
-              --out dist
-
-      - name: Upload appliance artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: appliance-${{ matrix.platform }}
-          path: |
-            dist/*.tar.gz
-            dist/*.tar.gz.sha256
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
   # Release — only on tag push. workflow_dispatch builds artifacts and stops.
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
-    needs: [build, appliance]
+    needs: build
     runs-on: ubuntu-latest
-    if: |
-      always() &&
-      needs.build.result == 'success' &&
-      (needs.appliance.result == 'success' || needs.appliance.result == 'skipped') &&
+    if: >-
       github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -580,54 +391,8 @@ jobs:
             artifacts/**/*.tar.gz.sha256
 
   # ---------------------------------------------------------------------------
-  # Latest mirror — runs after the canonical release is created on tag push.
-  # Force-rewrites a `latest` git tag + GitHub Release at this commit, holding
-  # the same artifacts. Appliance assembly (this workflow's `appliance` job
-  # plus homeCore-io/docker's appliance-release.yml) pulls from `latest` so
-  # plugin versioning is independent of core/appliance cadence.
-  # ---------------------------------------------------------------------------
-  publish-latest:
-    name: Update `latest` mirror
-    needs: release
-    runs-on: ubuntu-latest
-    if: |
-      always() &&
-      needs.release.result == 'success' &&
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Force-update `latest` release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eux
-          # Idempotent reset: drop any prior `latest` release + tag. The `|| true`
-          # absorbs the first-ever run when neither exists.
-          gh release delete latest \
-              --repo "$GITHUB_REPOSITORY" \
-              --cleanup-tag --yes 2>/dev/null || true
-
-          # Recreate at the current commit, attach the same artifacts as the
-          # canonical version release. Operators/appliance build steps pull
-          # `latest` for "always-most-recent-stable" semantics.
-          gh release create latest \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "latest (mirrors $GITHUB_REF_NAME)" \
-              --notes "Auto-mirrored from $GITHUB_REF_NAME on every release. Use this tag for the most recent stable build without pinning a specific version." \
-              artifacts/**/*.tar.gz \
-              artifacts/**/*.tar.gz.sha256
-
-  # ---------------------------------------------------------------------------
-  # Docker — opt-in. Builds a multi-arch alpine image from the prebuilt
-  # musl binaries and pushes to ghcr.io/<owner>/<image_name>.
+  # Docker — opt-in. Builds an alpine image from the prebuilt musl binary and
+  # pushes to ghcr.io/<owner>/<image_name>.
   #
   # Triggered on:
   #   - tag push  -> tag is github.ref_name (e.g. v0.1.0)
@@ -637,13 +402,7 @@ jobs:
     name: Publish Docker image
     needs: build
     runs-on: ubuntu-latest
-    # always() + explicit success check — without this, the transitive
-    # skip from webui-build (skipped when bundle_webui=false) propagates
-    # through build and marks this job skipped too. Same pattern as the
-    # release job below.
     if: >-
-      always() &&
-      needs.build.result == 'success' &&
       inputs.publish_docker_image == true &&
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'repository_dispatch' ||
@@ -677,8 +436,8 @@ jobs:
               # homeCore-io/docker compose files. The git tag itself stays as
               # `v0.1.0` (mirrored as the GitHub Release name).
               # Push BOTH the immutable version tag and the rolling :latest
-              # tag — appliance assembly pulls per-component images by :latest
-              # so plugin versioning is independent of appliance/core cadence.
+              # tag, so a compose file can track stable without naming a
+              # version while an operator who wants to pin still can.
               TAG="${GITHUB_REF_NAME#v}"
               TAGS=$(printf '%s\n%s' "${BASE}:${TAG}" "${BASE}:latest")
           else
@@ -733,12 +492,12 @@ jobs:
 
           # Extract per-arch binaries from each platform's tar.gz and
           # rename to <binary>-<arch> for TARGETARCH selection in the
-          # Dockerfile. Loop is resilient to either-or — when fast=true
-          # only linux-x86_64 was built, so skip platforms whose
-          # artifact dir is missing rather than failing on tar.
+          # Dockerfile. Only amd64 is built today, but the loop is kept so
+          # restoring arm64 needs a matrix entry and nothing here; it skips
+          # platforms with no artifact rather than failing on tar.
           for plat in linux-x86_64 linux-aarch64; do
               if [ ! -d "artifacts/${plat}" ]; then
-                  echo "::notice::skipping ${plat} (no artifact uploaded — fast build)"
+                  echo "::notice::skipping ${plat} (not built)"
                   continue
               fi
               tmpdir=$(mktemp -d)
@@ -778,24 +537,11 @@ jobs:
               exit 1
           fi
 
-          # WebUI bundle (already downloaded by "Download release artifacts").
-          # Dockerfile.core copies build-context/ui/ into the image.
-          if [ "${{ inputs.bundle_webui }}" = "true" ]; then
-              [ -d artifacts/webui-dist ] || { echo "::error::webui-dist artifact missing"; exit 1; }
-              cp -r artifacts/webui-dist build-context/ui
-          fi
-
           ls -la build-context
 
-      # QEMU is only needed for cross-arch emulation. Skip it entirely
-      # when fast=true so the runner doesn't spend ~30s installing
-      # binfmt handlers it won't use.
-      # FORCE_FAST: `if: false` skips QEMU; revert to `!inputs.fast`.
-      - name: Set up QEMU
-        if: ${{ false }}
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
+      # No QEMU — amd64-only on an amd64 runner needs no binfmt emulation.
+      # Re-add `docker/setup-qemu-action@v3` (platforms: linux/amd64,linux/arm64)
+      # if arm64 comes back, or buildx will fail on the foreign platform.
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -812,8 +558,7 @@ jobs:
         with:
           context: ./build-context
           file: ./build-context/Dockerfile
-          # FORCE_FAST: `true &&` forces amd64-only; revert to `inputs.fast`.
-          platforms: ${{ true && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          platforms: linux/amd64
           build-args: |
             BINARY_NAME=${{ inputs.binary_name }}
           tags: ${{ steps.resolve.outputs.tags }}
@@ -826,68 +571,6 @@ jobs:
             echo '```'
             echo "${{ steps.resolve.outputs.tags }}"
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ---------------------------------------------------------------------------
-  # Cascade — when a component publishes a fresh :dev image on develop,
-  # dispatch homeCore-io/docker's appliance build so the dev appliance
-  # picks it up automatically. Without this, dev appliance is always
-  # stale until someone runs the appliance workflow by hand.
-  #
-  # Concurrency on the docker side (cancel-in-progress=true) collapses
-  # a burst of component pushes (e.g. SDK fanout firing all 10 plugins)
-  # into a single appliance build.
-  #
-  # Auth: CROSS_REPO_DISPATCH_PAT — org-level secret with actions:write
-  # on homeCore-io/docker. Reached via `secrets: inherit` at the caller
-  # site, so each caller release.yml must include that line.
-  # ---------------------------------------------------------------------------
-  dispatch-appliance:
-    name: Dispatch appliance rebuild
-    needs: docker-publish
-    runs-on: ubuntu-latest
-    # Fire on every successful develop-channel :dev publish, regardless
-    # of how this workflow was triggered. Initially we gated on
-    # event_name=='push' but that excludes workflow_dispatch (which is
-    # how cross-repo cascades hit us, e.g. hc-web-leptos firing core's
-    # release after a UI change). Tag pushes are excluded because the
-    # appliance has its own tag-push handler that publishes :latest.
-    if: >-
-      always() &&
-      needs.docker-publish.result == 'success' &&
-      inputs.publish_docker_image == true &&
-      github.ref == 'refs/heads/develop'
-    # `secrets.X` in step-level `if:` is rejected at workflow-parse time
-    # (GH security hardening). Read the PAT into a job-level env var
-    # and branch on that instead.
-    env:
-      PAT: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
-    steps:
-      - name: Dispatch homeCore-io/docker appliance build
-        if: env.PAT != ''
-        env:
-          GH_TOKEN: ${{ env.PAT }}
-          COMPONENT: ${{ inputs.image_name || inputs.binary_name }}
-        # workflow_dispatch (Actions: write) instead of repository_dispatch
-        # (Contents: write) — minimizes PAT permissions. The docker
-        # workflow's concurrency group (`appliance-dev`) coalesces a burst
-        # of component pushes into one effective build.
-        run: |
-          gh workflow run appliance-release.yml \
-            --repo homeCore-io/docker \
-            --ref develop \
-            -F component_tag=dev \
-            -F appliance_tag=dev \
-            -F fast=true
-      - name: Skip notice (no PAT)
-        if: env.PAT == ''
-        run: |
-          echo "::warning::CROSS_REPO_DISPATCH_PAT not set; appliance cascade skipped. Set it as an org-level secret (or per-repo) to enable."
-      - name: Summary
-        if: env.PAT != ''
-        run: |
-          {
-            echo "Dispatched homeCore-io/docker → appliance-release.yml for ${{ inputs.image_name || inputs.binary_name }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
@@ -964,9 +647,25 @@ jobs:
           GH_TOKEN: ${{ secrets.REGISTRY_DISPATCH_PAT }}
         run: |
           set -euo pipefail
+          # A missing secret used to warn and pass. That left the one way a
+          # release could still report success while publishing nothing — the
+          # same "green but not installable" failure this job now exists to
+          # prevent, only quieter, and across every repo at once if the secret
+          # were ever removed. publish_registry=true is a request to publish;
+          # if that cannot happen, the release did not do what it was asked.
+          #
+          # An expired PAT already failed here, because `gh api` returns
+          # non-zero under `set -e`. Absent now fails the same way.
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::REGISTRY_DISPATCH_PAT not set; registry not notified. Artifact is attached to the release — dispatch manually via the registry's Publish workflow."
-            exit 0
+            echo "::error::REGISTRY_DISPATCH_PAT is not set, so ${{ inputs.registry_repo }} cannot be notified and this plugin will NOT be installable — but publish_registry is true, which asked for exactly that. The build and its release artifact are fine; only indexing is blocked."
+            echo "Expected an org-level secret visible to this repo. Check with:"
+            echo "  gh api /orgs/\${ORG}/actions/secrets --jq '.secrets[] | \"\\(.name) visibility=\\(.visibility)\"'   # needs admin:org"
+            echo "Set it with:"
+            echo "  gh secret set REGISTRY_DISPATCH_PAT --org \${ORG} --visibility all"
+            echo "The PAT needs actions:write on ${{ inputs.registry_repo }}; the per-repo GITHUB_TOKEN cannot reach another repository."
+            echo "To publish this build without re-running the release:"
+            echo "  gh workflow run publish.yml --repo ${{ inputs.registry_repo }} -f id=${{ steps.pkg.outputs.id }} -f name='${{ steps.pkg.outputs.name }}' -f version=${{ steps.pkg.outputs.version }} -f os=${{ steps.pkg.outputs.os }} -f arch=${{ steps.pkg.outputs.arch }} -f url=${{ steps.pkg.outputs.url }} -f sha256=${{ steps.pkg.outputs.sha256 }} -f size=${{ steps.pkg.outputs.size }}"
+            exit 1
           fi
           gh api "repos/${{ inputs.registry_repo }}/dispatches" \
             -f event_type=publish-plugin \
@@ -979,3 +678,89 @@ jobs:
             -F "client_payload[sha256]=${{ steps.pkg.outputs.sha256 }}" \
             -F "client_payload[size]=${{ steps.pkg.outputs.size }}"
           echo "Notified ${{ inputs.registry_repo }}: ${{ steps.pkg.outputs.id }} ${{ steps.pkg.outputs.version }}"
+
+      # Phase 6: make a release prove it published.
+      #
+      # Dispatching is not publishing. The step above ends at "notified" and
+      # never looks at the outcome, which is exactly how ten green releases on
+      # 2026-07-21 left six plugins missing from the index — four publish runs
+      # cancelled, two rejected on push, and nothing anywhere reported a
+      # problem. A release that cannot show its artifact in the index has not
+      # finished, so this fails the job instead of leaving it to be noticed
+      # weeks later.
+      #
+      # Polls the *served* index rather than the repo file: a hub
+      # installs from Pages, so that is where "installable" becomes true. It
+      # trails the commit by a deploy, which the timeout accounts for.
+      - name: Verify it reached the registry index
+        env:
+          INDEX_URL: ${{ inputs.registry_index_url }}
+          TIMEOUT_SECS: ${{ inputs.registry_verify_timeout_secs }}
+          ID: ${{ steps.pkg.outputs.id }}
+          NAME: ${{ steps.pkg.outputs.name }}
+          VER: ${{ steps.pkg.outputs.version }}
+          OS_: ${{ steps.pkg.outputs.os }}
+          ARCH: ${{ steps.pkg.outputs.arch }}
+          SHA: ${{ steps.pkg.outputs.sha256 }}
+          REGISTRY_REPO: ${{ inputs.registry_repo }}
+          URL: ${{ steps.pkg.outputs.url }}
+          SIZE: ${{ steps.pkg.outputs.size }}
+        run: |
+          set -uo pipefail
+          echo "Waiting for ${ID} ${VER} (${OS_}/${ARCH}) in ${INDEX_URL}"
+
+          deadline=$(( SECONDS + TIMEOUT_SECS ))
+          attempt=0
+          seen_sha=""
+          while :; do
+            attempt=$(( attempt + 1 ))
+            # Pages sits behind a CDN, so a plain GET can be served a copy from
+            # before the deploy. Bust it per attempt, or this polls a cache and
+            # times out against an index that already has the entry.
+            body="$(curl -fsSL --max-time 30 \
+                      -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+                      "${INDEX_URL}?cb=${GITHUB_RUN_ID}-${attempt}" 2>/dev/null)"
+
+            if [ -n "${body:-}" ]; then
+              # The entry for our exact coordinates, if the index has one.
+              entry="$(printf '%s' "$body" | jq -c --arg id "$ID" --arg v "$VER" \
+                        --arg os "$OS_" --arg arch "$ARCH" '
+                          .plugins[]? | select(.id == $id)
+                          | .versions[]? | select(.version == $v)
+                          | .artifacts[]? | select(.os == $os and .arch == $arch)
+                        ' 2>/dev/null | head -1)"
+
+              if [ -n "${entry:-}" ]; then
+                got="$(printf '%s' "$entry" | jq -r '.sha256 // ""')"
+                if [ "$got" = "$SHA" ]; then
+                  echo "Published and verified after ${attempt} attempt(s), $(( SECONDS ))s."
+                  echo "  $entry"
+                  exit 0
+                fi
+                # Present, but naming different bytes. Do NOT fail here: on a
+                # re-run of an existing tag the index still holds the previous
+                # build's artifact for these exact coordinates while this run's
+                # publish is still in flight, and a musl rebuild is not
+                # byte-identical. Failing on sight would call that a conflict
+                # when waiting resolves it. Remember it and keep polling; if it
+                # never converges the timeout below reports this rather than a
+                # bare "never appeared", which would be the wrong diagnosis.
+                if [ "$got" != "$seen_sha" ]; then
+                  echo "  attempt ${attempt}: index has sha256 ${got}, waiting for ${SHA}"
+                  seen_sha="$got"
+                fi
+              fi
+            fi
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              if [ -n "$seen_sha" ]; then
+                echo "::error::${ID} ${VER} (${OS_}/${ARCH}) is in ${INDEX_URL} with sha256 ${seen_sha}, and did not become ${SHA} within ${TIMEOUT_SECS}s (${attempt} attempts). These coordinates already name different bytes, so this is not a missing publish — something else holds that (id, version, os, arch). Check both artifacts before overwriting either; re-publishing will replace what is there."
+              else
+                echo "::error::${ID} ${VER} (${OS_}/${ARCH}) never appeared in ${INDEX_URL} within ${TIMEOUT_SECS}s (${attempt} attempts). The release and its artifact are fine — indexing is what failed, so the plugin is NOT installable. Check the Publish runs at https://github.com/${REGISTRY_REPO}/actions, then re-publish by hand:"
+              fi
+              echo "  gh workflow run publish.yml --repo ${REGISTRY_REPO} -f id=${ID} -f name='${NAME}' -f version=${VER} -f os=${OS_} -f arch=${ARCH} -f url=${URL} -f sha256=${SHA} -f size=${SIZE}"
+              exit 1
+            fi
+
+            sleep 20
+          done
