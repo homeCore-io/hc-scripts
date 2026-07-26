@@ -94,9 +94,12 @@ on:
         default: ''
         type: string
       dockerfile_name:
-        description: 'Dockerfile to use from homeCore-io/docker (Dockerfile.plugin or Dockerfile.core).'
+        description: >-
+          Dockerfile to use from homeCore-io/docker. Only Dockerfile.core
+          exists now — Dockerfile.plugin was removed along with the per-plugin
+          images, so the old default pointed at a file that is no longer there.
         required: false
-        default: 'Dockerfile.plugin'
+        default: 'Dockerfile.core'
         type: string
       docker_repo_ref:
         description: 'Branch/tag of homeCore-io/docker to fetch the Dockerfile + entrypoints from.'
@@ -517,11 +520,12 @@ jobs:
               Dockerfile.core)
                   cp docker-repo/images/entrypoint-core.sh build-context/
                   ;;
-              Dockerfile.plugin)
-                  cp docker-repo/images/entrypoint-plugin.sh build-context/
-                  ;;
               *)
-                  echo "::error::Unknown dockerfile_name: $DOCKERFILE"
+                  # Dockerfile.plugin used to be handled here. It and
+                  # entrypoint-plugin.sh are gone: plugins ship as signed
+                  # registry artifacts, not images, so hc-core is the only
+                  # thing this workflow builds a container for.
+                  echo "::error::Unknown dockerfile_name: $DOCKERFILE (homeCore-io/docker only provides Dockerfile.core)"
                   exit 1
                   ;;
           esac
