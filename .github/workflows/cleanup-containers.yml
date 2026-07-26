@@ -79,21 +79,53 @@ jobs:
           : > protected.txt
           jq -r '.[] | select(.tags|length > 0) | .digest' all.json \
               | sort -u > tagged.txt
+          # A manifest fetch that fails must ABORT, not be skipped.
+          #
+          # This used to end in `2>/dev/null || true`. If the curl failed —
+          # rate limit, transient 5xx, expired token — jq received nothing,
+          # wrote nothing, and the failure was swallowed. That tagged index's
+          # per-platform children then looked unreferenced, and the delete step
+          # below removed them: the tag survives, its content does not, and
+          # `docker pull` fails with "content not found" on an image that still
+          # appears in the tag list.
+          #
+          # That is not hypothetical. Every stable hc-core tag — 0.1.4, 0.1.5
+          # and latest — is in exactly that state today, dating to the
+          # 2026-05-11 incident this protection was added to prevent. The
+          # protection was right; tolerating a failed lookup while still
+          # deleting was the hole.
+          #
+          # Pruning on an incomplete protected set is worse than not pruning:
+          # untagged layers cost storage, a broken release tag costs a release.
+          # So retry, then fail the job.
           while IFS= read -r d; do
               [ -z "$d" ] && continue
               echo "$d" >> protected.txt
               # Manifest may be an OCI index OR a single-arch image. The
               # `.manifests` field only exists on the former; jq emits
               # nothing for image manifests so they're a no-op.
-              curl -fsSL \
-                  -H "Authorization: Bearer ${GHCR_TOKEN}" \
-                  -H "Accept: application/vnd.oci.image.index.v1+json" \
-                  -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
-                  -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-                  -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-                  "https://ghcr.io/v2/${OWNER_LC}/${PKG}/manifests/${d}" \
+              body=""
+              for attempt in 1 2 3; do
+                  if body=$(curl -fsSL --max-time 30 \
+                      -H "Authorization: Bearer ${GHCR_TOKEN}" \
+                      -H "Accept: application/vnd.oci.image.index.v1+json" \
+                      -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+                      -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                      -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                      "https://ghcr.io/v2/${OWNER_LC}/${PKG}/manifests/${d}"); then
+                      break
+                  fi
+                  body=""
+                  echo "::warning::manifest fetch failed for ${PKG}@${d} (attempt ${attempt}/3)"
+                  sleep $(( attempt * 5 ))
+              done
+              if [ -z "$body" ]; then
+                  echo "::error::Could not read the manifest for ${PKG}@${d} after 3 attempts. That version is tagged, so its per-platform children must be protected — and this run cannot tell what they are. Refusing to delete anything for ${PKG}, because pruning against an incomplete protected set is how a tagged release loses its content."
+                  exit 1
+              fi
+              printf '%s' "$body" \
                   | jq -r 'if (.manifests // empty) then .manifests[].digest else empty end' \
-                  >> protected.txt 2>/dev/null || true
+                  >> protected.txt
           done < tagged.txt
           sort -u protected.txt > protected.sorted
           mv protected.sorted protected.txt
