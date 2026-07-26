@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # build-archive.sh — Build distributable HomeCore archives.
 #
-# Three archive kinds:
-#   core       homecore/ with core binary + UI + service templates, no plugins
+# Two archive kinds:
+#   core       homecore/ with core binary + service templates, no plugins
 #   plugin     a single-plugin fragment under homecore/plugins/<name>/
-#   appliance  homecore/ with everything — core + all plugins merged
+#
+# There used to be a third, `appliance`, which merged core with every plugin
+# fragment into one tarball, and a --ui-dist flag that folded in the Leptos WASM
+# bundle. Both are gone: the UI is hc-web (its own container) and plugins install
+# at runtime from the signed registry, so nothing produced or consumed either.
 #
 # Every archive's top-level directory is `homecore/` so users extract
 # wherever they want — `tar -xf <archive>` produces a `homecore/` tree.
@@ -13,7 +17,6 @@
 #
 # Filenames:
 #   homecore-core-<version>-<platform>.tar.gz
-#   homecore-appliance-<version>-<platform>.tar.gz
 #   <name>-<version>-<platform>.tar.gz
 #
 # Designed to run identically locally and in GitHub Actions:
@@ -22,10 +25,10 @@
 #             the binary at the standard cargo path
 #
 # Usage:
-#   build-archive.sh --kind <core|plugin|appliance> [options]
+#   build-archive.sh --kind <core|plugin> [options]
 #
 # Options:
-#   --kind            core | plugin | appliance        (required)
+#   --kind            core | plugin                    (required)
 #   --name            plugin crate name (required for --kind plugin)
 #   --target          rust target triple, e.g. x86_64-unknown-linux-musl
 #                     (default: host)
@@ -33,10 +36,6 @@
 #                     (default: auto-detect from Cargo.toml; fallback dev-<sha>)
 #   --source          path to source repo (default: $PWD)
 #   --bin             path to a prebuilt binary (overrides default cargo path)
-#   --ui-dist         path to hc-web-leptos trunk build output (core/appliance)
-#   --plugin-fragments-dir
-#                     directory containing per-plugin tarballs to merge
-#                     into the appliance archive (appliance only)
 #   --out             output directory (default: dist/)
 #   --build           run cargo build before packaging (default: off)
 #   --help
@@ -52,8 +51,6 @@ SOURCE="$PWD"
 OUT_DIR="dist"
 BUILD=false
 BIN=""
-UI_DIST=""
-PLUGIN_FRAGMENTS_DIR=""
 
 usage() { sed -n '2,/^set /p' "$0" | grep -E '^#' | sed 's/^# \?//'; exit "${1:-0}"; }
 
@@ -65,8 +62,6 @@ while [[ $# -gt 0 ]]; do
     --version)               VERSION="$2"; shift 2 ;;
     --source)                SOURCE="$2"; shift 2 ;;
     --bin)                   BIN="$2"; shift 2 ;;
-    --ui-dist)               UI_DIST="$2"; shift 2 ;;
-    --plugin-fragments-dir)  PLUGIN_FRAGMENTS_DIR="$2"; shift 2 ;;
     --out)                   OUT_DIR="$2"; shift 2 ;;
     --build)                 BUILD=true; shift ;;
     --help|-h)               usage 0 ;;
@@ -77,8 +72,8 @@ done
 # ── Validate ────────────────────────────────────────────────────────
 [[ -n "$KIND" ]] || { echo "--kind required" >&2; usage 2; }
 case "$KIND" in
-  core|plugin|appliance) ;;
-  *) echo "--kind must be one of core, plugin, appliance" >&2; usage 2 ;;
+  core|plugin) ;;
+  *) echo "--kind must be one of core, plugin" >&2; usage 2 ;;
 esac
 [[ "$KIND" = "plugin" && -z "$NAME" ]] && { echo "--kind plugin requires --name" >&2; usage 2; }
 
@@ -159,7 +154,7 @@ render_readme() {
 }
 
 copy_root_assets() {
-  # Files that go at the root of homecore/ in core and appliance archives.
+  # Files that go at the root of homecore/ in a core archive.
   local root="$1"
   for f in LICENSE LICENSE-MIT LICENSE-APACHE; do
     [[ -f "$SOURCE/$f" ]] && cp "$SOURCE/$f" "$root/"
@@ -167,9 +162,7 @@ copy_root_assets() {
 }
 
 stage_core() {
-  # Stage core's tree under <stage>/homecore. Caller decides whether to
-  # tar from there directly (core) or merge plugin fragments first
-  # (appliance).
+  # Stage core's tree under <stage>/homecore.
   local stage="$1"
   local root="$stage/homecore"
   mkdir -p "$root/bin" "$root/config" "$root/scripts/service-templates" "$root/plugins"
@@ -183,11 +176,6 @@ stage_core() {
   [[ -d "$SOURCE/config/profiles" ]] && cp -r "$SOURCE/config/profiles" "$root/config/"
   [[ -d "$SOURCE/scripts/service-templates" ]] && \
     cp -r "$SOURCE/scripts/service-templates/." "$root/scripts/service-templates/"
-
-  if [[ -n "$UI_DIST" && -d "$UI_DIST" ]]; then
-    mkdir -p "$root/ui/dist"
-    cp -r "$UI_DIST/." "$root/ui/dist/"
-  fi
 
   copy_root_assets "$root"
 }
@@ -234,31 +222,4 @@ case "$KIND" in
     write_archive "$stage" "${NAME}-${VERSION}-${PLATFORM}.tar.gz"
     ;;
 
-  appliance)
-    # Caller must provide --plugin-fragments-dir with a set of per-plugin
-    # tarballs (built via this same script with --kind plugin). We do not
-    # attempt to build plugins from source here — appliance assembly is
-    # purely a stitch-and-tar step.
-    [[ -n "$PLUGIN_FRAGMENTS_DIR" && -d "$PLUGIN_FRAGMENTS_DIR" ]] || \
-      { echo "--kind appliance requires --plugin-fragments-dir" >&2; exit 1; }
-
-    maybe_build homecore
-    stage=$(mktemp -d)
-    stage_core "$stage"
-
-    count=0
-    for frag in "$PLUGIN_FRAGMENTS_DIR"/*.tar.gz; do
-      [[ -f "$frag" ]] || continue
-      log "    merging $(basename "$frag")"
-      tar -C "$stage" -xf "$frag"
-      count=$((count + 1))
-    done
-    [[ "$count" -gt 0 ]] || { echo "ERROR: no plugin fragments found in $PLUGIN_FRAGMENTS_DIR" >&2; exit 1; }
-    log "merged $count plugin fragments"
-
-    # Render appliance README last so it overrides the core README that
-    # stage_core wrote in (plugin fragments don't touch the root README).
-    render_readme appliance "$stage/homecore" homecore
-    write_archive "$stage" "homecore-appliance-${VERSION}-${PLATFORM}.tar.gz"
-    ;;
 esac

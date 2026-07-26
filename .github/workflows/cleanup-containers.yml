@@ -37,10 +37,15 @@ jobs:
       matrix:
         # The images the project still publishes. Plugins are no longer built
         # as container images (they ship as signed registry artifacts), so the
-        # 10 plugin packages are gone from here.
+        # 10 plugin packages are gone from here. homecore-appliance went the
+        # same way: the all-in-one image is retired in favour of hc-core +
+        # hc-web wired together by compose.
+        #
+        # Removing a name here stops pruning it, it does not delete it — the
+        # existing homecore-appliance versions stay in GHCR so anything still
+        # running one keeps working. Delete the package by hand when nothing is.
         package:
           - hc-core
-          - homecore-appliance
           - hc-web
     steps:
       - name: Compute deletable version IDs
