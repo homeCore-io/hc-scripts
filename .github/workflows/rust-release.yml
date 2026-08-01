@@ -95,14 +95,32 @@ on:
         type: string
       dockerfile_name:
         description: >-
-          Dockerfile to use from homeCore-io/docker. Only Dockerfile.core
-          exists now — Dockerfile.plugin was removed along with the per-plugin
-          images, so the old default pointed at a file that is no longer there.
+          Name of the Dockerfile to build. Looked up inside docker_context_dir
+          in the calling repo when that is set, otherwise in homeCore-io/docker's
+          images/ (where only Dockerfile.core exists — Dockerfile.plugin went
+          away with the per-plugin images).
         required: false
         default: 'Dockerfile.core'
         type: string
+      docker_context_dir:
+        description: >-
+          Directory in the CALLING repo holding the image recipe — the
+          Dockerfile named by dockerfile_name plus anything it COPYs, such as an
+          entrypoint. Everything in the directory is staged into the build
+          context, so adding a helper script needs no change here.
+
+          Set this and the recipe is versioned with the component it builds: the
+          release tag alone reproduces the image, and there is no cross-repo
+          tag to keep in step. Leave it empty for the legacy path, which fetches
+          the recipe from homeCore-io/docker at docker_repo_ref and requires
+          that repo to carry a matching tag.
+        required: false
+        default: ''
+        type: string
       docker_repo_ref:
-        description: 'Branch/tag of homeCore-io/docker to fetch the Dockerfile + entrypoints from.'
+        description: >-
+          Legacy path only — ignored when docker_context_dir is set. Branch/tag
+          of homeCore-io/docker to fetch the Dockerfile + entrypoints from.
         required: false
         default: 'main'
         type: string
@@ -461,12 +479,17 @@ jobs:
         with:
           path: caller
 
-      # The Dockerfile and entrypoints that build the published image come from
-      # this repo at this ref, so it is part of the recipe. Callers pin it to the
-      # release tag; a missing tag means the release round tagged the component
-      # before tagging homeCore-io/docker. actions/checkout would report only
+      # Legacy path only. When the caller owns its recipe (docker_context_dir)
+      # there is no second repo to fetch, no ref to keep in step, and nothing to
+      # pre-flight — which is the point of that input.
+      #
+      # Otherwise the Dockerfile and entrypoints come from homeCore-io/docker at
+      # this ref, so it is part of the recipe. Callers pin it to the release tag;
+      # a missing tag means the release round tagged the component before
+      # tagging homeCore-io/docker. actions/checkout would report only
       # "couldn't find remote ref", so say what actually needs doing.
       - name: Pre-flight — docker repo ref exists
+        if: inputs.docker_context_dir == ''
         run: |
           set -eu
           REF='${{ inputs.docker_repo_ref }}'
@@ -477,6 +500,7 @@ jobs:
           echo "docker recipe: homeCore-io/docker@${REF}"
 
       - name: Checkout homeCore-io/docker
+        if: inputs.docker_context_dir == ''
         uses: actions/checkout@v4
         with:
           repository: homeCore-io/docker
@@ -513,22 +537,52 @@ jobs:
               cp "$BIN" "build-context/${{ inputs.binary_name }}-${ARCH}"
           done
 
-          # Dockerfile + matching entrypoint from homeCore-io/docker.
+          # Image recipe. Two sources:
+          #
+          #  docker_context_dir set — the recipe lives in the calling repo and is
+          #  therefore versioned with the thing it builds. The whole directory is
+          #  staged, so the Dockerfile's entrypoint and any helper it COPYs come
+          #  along without this step naming them.
+          #
+          #  unset — legacy: fetched from homeCore-io/docker, which then has to
+          #  carry a tag matching the component's.
           DOCKERFILE="${{ inputs.dockerfile_name }}"
-          cp "docker-repo/images/${DOCKERFILE}" build-context/Dockerfile
-          case "$DOCKERFILE" in
-              Dockerfile.core)
-                  cp docker-repo/images/entrypoint-core.sh build-context/
-                  ;;
-              *)
-                  # Dockerfile.plugin used to be handled here. It and
-                  # entrypoint-plugin.sh are gone: plugins ship as signed
-                  # registry artifacts, not images, so hc-core is the only
-                  # thing this workflow builds a container for.
-                  echo "::error::Unknown dockerfile_name: $DOCKERFILE (homeCore-io/docker only provides Dockerfile.core)"
+          CTX_DIR="${{ inputs.docker_context_dir }}"
+
+          if [ -n "$CTX_DIR" ]; then
+              SRC="caller/${CTX_DIR}"
+              if [ ! -d "$SRC" ]; then
+                  echo "::error::docker_context_dir '${CTX_DIR}' not found in the calling repo."
                   exit 1
-                  ;;
-          esac
+              fi
+              if [ ! -f "${SRC}/${DOCKERFILE}" ]; then
+                  echo "::error::dockerfile_name '${DOCKERFILE}' not found in '${CTX_DIR}'. Present: $(ls -A "$SRC" | tr '\n' ' ')"
+                  exit 1
+              fi
+              cp -R "${SRC}/." build-context/
+              # build-push-action is pointed at build-context/Dockerfile, so
+              # normalise the name — unless it is already that, in which case
+              # moving it onto itself would delete it.
+              if [ "$DOCKERFILE" != "Dockerfile" ]; then
+                  mv "build-context/${DOCKERFILE}" build-context/Dockerfile
+              fi
+              echo "docker recipe: ${GITHUB_REPOSITORY}@${GITHUB_SHA} (${CTX_DIR}/${DOCKERFILE})"
+          else
+              cp "docker-repo/images/${DOCKERFILE}" build-context/Dockerfile
+              case "$DOCKERFILE" in
+                  Dockerfile.core)
+                      cp docker-repo/images/entrypoint-core.sh build-context/
+                      ;;
+                  *)
+                      # Dockerfile.plugin used to be handled here. It and
+                      # entrypoint-plugin.sh are gone: plugins ship as signed
+                      # registry artifacts, not images, so hc-core is the only
+                      # thing this workflow builds a container for.
+                      echo "::error::Unknown dockerfile_name: $DOCKERFILE (homeCore-io/docker only provides Dockerfile.core)"
+                      exit 1
+                      ;;
+              esac
+          fi
 
           # config.toml.example from caller repo.
           if [ -n "${{ inputs.config_example }}" ] && \
@@ -565,6 +619,14 @@ jobs:
           platforms: linux/amd64
           build-args: |
             BINARY_NAME=${{ inputs.binary_name }}
+          # Provenance in the image itself rather than inferred from a tag-name
+          # convention. With docker_context_dir the recipe ships in this repo,
+          # so `revision` identifies the Dockerfile and the source together —
+          # which is the property the cross-repo tag lockstep was reaching for.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.resolve.outputs.tag }}
           tags: ${{ steps.resolve.outputs.tags }}
           push: true
 
