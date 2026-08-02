@@ -12,7 +12,8 @@
 #   --no-update     Skip 'cargo update' after pull (default: refresh Cargo.lock per component)
 #   --no-build      Skip all cargo builds; use existing binaries as-is
 #   --release       Build and run release binaries (default: debug)
-#   --webui         Build and serve hc-web-leptos (trunk serve) alongside homecore
+#   --webui         Also start hc-web's dev proxy, so the Flutter app can reach
+#                   this core same-origin (see the note it prints)
 #   --help          Show this help
 
 set -uo pipefail
@@ -27,7 +28,7 @@ BUILD=true
 WEBUI=false
 PROFILE="debug"
 CARGO_FLAG=""
-WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web-leptos"
+WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -137,11 +138,10 @@ fi
 # ---------------------------------------------------------------------------
 
 if $BUILD; then
-    WEBUI_COUNT=0; $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]] && WEBUI_COUNT=1
     PLUGINS_WS="$WORKSPACE_ROOT/plugins/Cargo.toml"
     USE_PLUGIN_WS=false
     [[ -f "$PLUGINS_WS" ]] && USE_PLUGIN_WS=true
-    TOTAL=$(( ${#PLUGIN_DIRS[@]} + 1 + WEBUI_COUNT ))   # plugins + homecore + webui
+    TOTAL=$(( ${#PLUGIN_DIRS[@]} + 1 ))   # plugins + homecore
     FAILED=()
     STEP=0
 
@@ -186,19 +186,6 @@ if $BUILD; then
     echo "  ok"
     echo
 
-    # Build hc-web-leptos if --webui
-    if $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]]; then
-        STEP=$(( STEP + 1 ))
-        echo "[$STEP/$TOTAL] hc-web-leptos (trunk build)"
-        if ! trunk build --config "$WEBUI_DIR/Trunk.toml" 2>&1; then
-            echo "  WARN: hc-web-leptos build failed — trunk serve may use stale assets" >&2
-            FAILED+=("hc-web-leptos")
-        else
-            echo "  ok"
-        fi
-        echo
-    fi
-
     # Summary
     if [[ ${#FAILED[@]} -eq 0 ]]; then
         echo "==> All builds succeeded"
@@ -222,34 +209,52 @@ if [[ ! -f "$BINARY" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Web UI (trunk serve as a background process)
+# Web UI — hc-web's dev proxy, as a background process
 # ---------------------------------------------------------------------------
+#
+# This used to `trunk serve` hc-web-leptos, the Leptos/WASM admin core once
+# baked in. That client is retired; the web UI is hc-web, which is Flutter and
+# does not build with cargo.
+#
+# What hc-web needs from us is not a build — Flutter's own dev server does the
+# incremental compile — it is a SAME-ORIGIN API. The app calls /api/v1
+# relatively on purpose, and core sends no CORS headers at all, so a browser
+# cannot reach core cross-origin. tool/dev.mjs is 60 lines that serve the app
+# from Flutter's dev server and proxy /api/v1 (WebSockets included) to a real
+# core. In production the nginx in hc-web's image does the same job.
+#
+# `flutter run` stays in the operator's terminal rather than being backgrounded
+# here: hot restart is a keypress on its stdin, and that is the entire point of
+# running it this way.
 
-TRUNK_PID=""
+WEBPROXY_PID=""
 
 cleanup() {
-    if [[ -n "$TRUNK_PID" ]]; then
-        echo "==> Stopping trunk serve (pid $TRUNK_PID)"
-        kill "$TRUNK_PID" 2>/dev/null
-        wait "$TRUNK_PID" 2>/dev/null
+    if [[ -n "$WEBPROXY_PID" ]]; then
+        echo "==> Stopping hc-web dev proxy (pid $WEBPROXY_PID)"
+        kill "$WEBPROXY_PID" 2>/dev/null
+        wait "$WEBPROXY_PID" 2>/dev/null
     fi
 }
 trap cleanup EXIT INT TERM
 
-if $WEBUI && [[ -f "$WEBUI_DIR/Trunk.toml" ]]; then
-    echo "==> Starting trunk serve (hc-web-leptos :3000)"
-    # --ignore Cargo.lock entries: with the per-category workspace
-    # layout the active lockfile is at clients/Cargo.lock; the
-    # per-repo hc-web-leptos/Cargo.lock is now quiescent. Ignoring
-    # both is belt-and-braces against the trunk-watcher rebuild
-    # loop seen pre-workspace.
-    CLIENTS_WS="$WORKSPACE_ROOT/clients"
-    TRUNK_IGNORES=(--ignore "$WEBUI_DIR/Cargo.lock")
-    [[ -f "$CLIENTS_WS/Cargo.lock" ]] && TRUNK_IGNORES+=(--ignore "$CLIENTS_WS/Cargo.lock")
-    trunk serve --config "$WEBUI_DIR/Trunk.toml" "${TRUNK_IGNORES[@]}" &
-    TRUNK_PID=$!
-    echo "    pid: $TRUNK_PID"
-    echo
+if $WEBUI; then
+    if [[ ! -f "$WEBUI_DIR/tool/dev.mjs" ]]; then
+        echo "WARN: $WEBUI_DIR/tool/dev.mjs not found — skipping --webui" >&2
+    else
+        HC_PORT="$(sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+                    "$HOMECORE_SRC/$CONFIG" | head -1)"
+        HC_PORT="${HC_PORT:-8080}"
+        echo "==> Starting hc-web dev proxy (:3001 -> core :$HC_PORT)"
+        ( cd "$WEBUI_DIR" && HOMECORE_URL="http://127.0.0.1:$HC_PORT" node tool/dev.mjs ) &
+        WEBPROXY_PID=$!
+        echo "    pid: $WEBPROXY_PID"
+        echo
+        echo "    Now run this in another terminal, and press R to hot-restart:"
+        echo "      cd $WEBUI_DIR && flutter run -d web-server --web-port 5001 --web-hostname 127.0.0.1"
+        echo "    Then open http://localhost:3001"
+        echo
+    fi
 fi
 
 # ---------------------------------------------------------------------------
