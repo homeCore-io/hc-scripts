@@ -461,22 +461,39 @@ jobs:
         with:
           path: artifacts
 
+      # Flatten whatever layout download-artifact produced into one directory.
+      #
+      # It creates a per-artifact subdirectory only when downloading more than
+      # one (v5+), so the path differs between a one-platform and a two-platform
+      # release. That used to be handled by listing both `artifacts/**/*.tar.gz`
+      # and `artifacts/*.tar.gz` — but `**` DOES match zero directories here, so
+      # both globs matched the same file and every asset was uploaded twice. The
+      # second upload takes the action's replace path, which 404s on GitHub's
+      # asset API and fails the job *after* the assets are already attached.
+      # hc-caseta 0.1.10 died exactly there.
+      #
+      # `find -exec` sidesteps the question: one flat directory, one glob, each
+      # asset uploaded once, no dependence on how `**` is interpreted.
+      - name: Flatten artifacts
+        run: |
+          set -eu
+          mkdir -p dist
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \) \
+            -exec cp -n {} dist/ \;
+          ls -l dist/
+          [ -n "$(ls -A dist)" ] || { echo "::error::no release artifacts found"; exit 1; }
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        # v2, not v3. The v3 bump on 2026-08-03 was the only action in that
+        # round to regress: it 404s on GitHub's asset-update API whenever an
+        # asset of the same name already exists, which is both the
+        # double-upload case above and any re-run over a previous attempt.
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          # Both layouts, deliberately. download-artifact only creates the
-          # per-artifact subdirectory when there is more than one artifact
-          # (v5+), and `**/` is not guaranteed to match zero directories — so a
-          # single-platform release would attach nothing and the tag would ship
-          # an empty Release without failing.
-          files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.tar.gz.sha256
-            artifacts/*.tar.gz
-            artifacts/*.tar.gz.sha256
+          files: dist/*
 
   # ---------------------------------------------------------------------------
   # Docker — opt-in. Builds an alpine image from the prebuilt musl binary and
