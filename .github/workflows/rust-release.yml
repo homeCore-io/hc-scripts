@@ -407,9 +407,16 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
+          # Both layouts, deliberately. download-artifact only creates the
+          # per-artifact subdirectory when there is more than one artifact
+          # (v5+), and `**/` is not guaranteed to match zero directories — so a
+          # single-platform release would attach nothing and the tag would ship
+          # an empty Release without failing.
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.tar.gz.sha256
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sha256
 
   # ---------------------------------------------------------------------------
   # Docker — opt-in. Builds an alpine image from the prebuilt musl binary and
@@ -523,12 +530,28 @@ jobs:
           # restoring arm64 needs a matrix entry and nothing here; it skips
           # platforms with no artifact rather than failing on tar.
           for plat in linux-x86_64 linux-aarch64; do
-              if [ ! -d "artifacts/${plat}" ]; then
+              # Locate the archive by NAME, not by directory.
+              #
+              # download-artifact created `<path>/<artifact-name>/` per artifact
+              # up to v4. From v5 it only does that when downloading more than
+              # one; with a single artifact the contents land straight in
+              # `<path>`. Only amd64 is built today, so there is exactly one
+              # artifact, and the per-platform directory this used to test for
+              # silently stopped existing — every platform was "not built", the
+              # build context came out empty, and the Docker build failed much
+              # later with `"/homecore-amd64": not found`.
+              #
+              # The platform is in the archive filename either way
+              # (homecore-core-dev-<sha>-linux-x86_64.tar.gz), so match on that
+              # and the step stops caring which layout it gets. This is the same
+              # approach the tar.zst packaging step below already used.
+              GZ="$(find artifacts -type f -name "*-${plat}.tar.gz" -print -quit)"
+              if [ -z "$GZ" ]; then
                   echo "::notice::skipping ${plat} (not built)"
                   continue
               fi
               tmpdir=$(mktemp -d)
-              tar -xzf artifacts/${plat}/*.tar.gz -C "$tmpdir"
+              tar -xzf "$GZ" -C "$tmpdir"
               BIN=$(find "$tmpdir" -type f -path "*/bin/${{ inputs.binary_name }}")
               case "$plat" in
                   linux-x86_64)  ARCH=amd64 ;;
