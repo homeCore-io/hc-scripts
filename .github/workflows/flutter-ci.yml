@@ -90,31 +90,55 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Install Flutter ${{ inputs.flutter_version }}
+      # An explicit version pins within the channel; an EMPTY version means
+      # "newest on the channel".
+      #
+      # This used to pass `flutter_version` straight through, with a comment
+      # claiming the canary's `flutter_version: stable` "resolves to the newest
+      # stable release". It does not. `stable` is a channel name, not a version,
+      # and subosito/flutter-action resolves this input against a release
+      # manifest — so it failed outright, in ~150ms, before checking out an SDK
+      # or compiling anything:
+      #
+      #     Unable to determine Flutter version for channel: stable
+      #     version: stable architecture: x64
+      #
+      # So the canary never ran once. It exists to warn that stable moved before
+      # a pin bump makes every new lint and deprecation arrive at the same time
+      # (hc-web paid exactly that bill with `onReorder`), and instead it sat red
+      # for a reason that had nothing to do with Flutter. A job that is
+      # permanently red is one everyone learns to skip.
+      #
+      # This is a step and not an inline expression because the obvious ternary
+      #
+      #     ${{ inputs.flutter_version == 'stable' && '' || inputs.flutter_version }}
+      #
+      # is broken in a way that reproduces the original bug exactly: '' is FALSY
+      # in GitHub expressions, so `&& ''` fails the short-circuit and the `||`
+      # branch wins, yielding 'stable' again. It looks correct, and it silently
+      # is not. Shell says what it picked, in the log, where it can be checked.
+      - name: Resolve Flutter SDK
+        id: sdk
+        env:
+          REQUESTED: ${{ inputs.flutter_version }}
+        run: |
+          if [ "$REQUESTED" = "stable" ]; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "Tracking the newest release on the stable channel."
+          else
+            echo "version=$REQUESTED" >> "$GITHUB_OUTPUT"
+            echo "Pinned to Flutter $REQUESTED."
+          fi
+
+      - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
-          # An explicit version pins within the channel; an EMPTY version means
-          # "newest on the channel".
-          #
-          # This used to pass `flutter_version` straight through, with a comment
-          # claiming that the canary's `flutter_version: stable` "resolves to
-          # the newest stable release". It does not. `stable` is a channel name,
-          # not a version, and subosito/flutter-action resolves this input
-          # against a release manifest — so it failed outright, in ~150ms,
-          # before checking out an SDK or compiling anything:
-          #
-          #     Unable to determine Flutter version for channel: stable
-          #     version: stable architecture: x64
-          #
-          # So the canary never ran once. It exists to warn that stable moved
-          # before a pin bump makes every new lint and deprecation arrive at
-          # once (hc-web paid exactly that bill with `onReorder`), and instead
-          # it sat red for a reason that had nothing to do with Flutter. A job
-          # that is permanently red is one everyone learns to skip, which is
-          # worse than not having it.
-          flutter-version: ${{ inputs.flutter_version == 'stable' && '' || inputs.flutter_version }}
+          flutter-version: ${{ steps.sdk.outputs.version }}
           channel: stable
           cache: true
+
+      - name: Report the Flutter actually installed
+        run: flutter --version
 
       - name: flutter pub get
         run: flutter pub get
