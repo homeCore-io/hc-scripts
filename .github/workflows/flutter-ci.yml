@@ -42,7 +42,7 @@ on:
           The literal "stable" is accepted as a sentinel meaning "newest on the
           stable channel". Only the canary should pass it — CI pins on purpose.'
         required: false
-        default: "3.44.4"
+        default: "3.44.8"
         type: string
       run_tests:
         description: 'Run flutter test.'
@@ -86,7 +86,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
