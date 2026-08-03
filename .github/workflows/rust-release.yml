@@ -191,7 +191,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # On tag push, refuse to build if Cargo.toml's package version
       # doesn't match the tag. Catches the lockstep drift that produced
@@ -222,7 +222,7 @@ jobs:
       # "exec format error".
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -324,7 +324,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch hc-scripts (for build-archive.sh)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: homeCore-io/hc-scripts
           ref: main
@@ -375,7 +375,7 @@ jobs:
           echo "archive_basename=$(basename "$archive" .tar.gz)" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}
           path: |
@@ -397,12 +397,12 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
@@ -475,7 +475,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout calling repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: caller
 
@@ -501,14 +501,14 @@ jobs:
 
       - name: Checkout homeCore-io/docker
         if: inputs.docker_context_dir == ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: homeCore-io/docker
           ref: ${{ inputs.docker_repo_ref }}
           path: docker-repo
 
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -602,17 +602,17 @@ jobs:
       # if arm64 comes back, or buildx will fail on the foreign platform.
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ./build-context
           file: ./build-context/Dockerfile
@@ -659,7 +659,7 @@ jobs:
       contents: write
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 

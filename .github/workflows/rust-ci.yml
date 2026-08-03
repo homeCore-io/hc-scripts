@@ -67,7 +67,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Empty string is actions/checkout's own default (the triggering
           # ref), so existing callers are unaffected.
