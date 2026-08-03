@@ -3,11 +3,14 @@
 # Used by workspace-clone.sh and as the authoritative repo list.
 #
 # Roles:
-#   core    — the homeCore repo: server, crates, the Rust SDK, every plugin
+#   core    — the homeCore repo: server, crates, the Rust SDK, every Rust plugin
+#   plugin  — a plugin that is NOT Rust, so not a member of that workspace
 #   sdk     — plugin SDKs for other languages (Python, Node.js, .NET)
 #   client  — UI and API consumers (web, TUI, MCP)
 #
-# The thirteen plugin repos and hc-plugin-sdk-rs are NOT listed here any more.
+# The thirteen Rust plugin repos and hc-plugin-sdk-rs are NOT listed here any
+# more. hc-matter is: it is TypeScript (matter.js), so it stays its own repo for
+# the same reason hc-web and hc-mcp do.
 # They live inside homeCore as workspace members — cloning core gets you all of
 # them, at the revision that actually builds together. The old repos are
 # archived read-only; their releases still serve the registry entries that point
@@ -18,6 +21,12 @@ role   = "core"
 name   = "homeCore"
 path   = "core"
 remote = "git@github.com:homeCore-io/homeCore.git"
+
+[[repo]]
+role   = "plugin"
+name   = "hc-matter"
+path   = "plugins/hc-matter"
+remote = "git@github.com:homeCore-io/hc-matter.git"
 
 [[repo]]
 role   = "sdk"
