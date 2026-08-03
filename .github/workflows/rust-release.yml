@@ -56,6 +56,31 @@ on:
         description: 'Cargo binary target to build (also the archive prefix).'
         required: true
         type: string
+      # ─── Monorepo support ────────────────────────────────────────────────
+      #
+      # One repo can hold many releasable crates, so neither "the tag is v<ver>"
+      # nor "the package is at the repo root" holds there. Both inputs default
+      # to the single-crate behaviour, so a caller that ignores them sees no
+      # change at all.
+      tag_prefix:
+        description: >-
+          What precedes the `v` in this component's tags. Empty (the default)
+          means tags look like `v0.1.19`. homeCore's monorepo tags a plugin
+          `hc-yolink-v0.1.11`, so it passes `hc-yolink-`. Everything that keys
+          off the tag — the version gate, the archive version, the Release,
+          docker and registry jobs — reads it through this.
+        required: false
+        default: ''
+        type: string
+      source_dir:
+        description: >-
+          Directory holding the component's config/ and README.md, relative to
+          the repo root. Defaults to the root. A monorepo passes e.g.
+          `plugins/hc-yolink`. Only archive staging reads this; the cargo build
+          still runs at the root, because that is where the workspace is.
+        required: false
+        default: '.'
+        type: string
       version_manifest:
         description: >-
           Manifest whose [package] version must match the release tag. Defaults
@@ -210,11 +235,12 @@ jobs:
       # workflow_dispatch (no tag in flight). Mismatched tags will fail
       # at this step before any wasted compile work.
       - name: Verify Cargo.toml version matches tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, format('refs/tags/{0}v', inputs.tag_prefix))
         env:
           MANIFEST: ${{ inputs.version_manifest }}
+          PREFIX: ${{ inputs.tag_prefix }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
+          TAG="${GITHUB_REF#refs/tags/${PREFIX}v}"
           if [ ! -f "$MANIFEST" ]; then
             echo "::error::version_manifest '$MANIFEST' does not exist in this repo."
             exit 1
@@ -232,7 +258,7 @@ jobs:
             exit 1
           fi
           if [ "$TAG" != "$PKG_VERSION" ]; then
-            echo "::error::Tag v$TAG does not match $MANIFEST version $PKG_VERSION."
+            echo "::error::Tag ${PREFIX}v$TAG does not match $MANIFEST version $PKG_VERSION."
             echo "::error::Bump the [package] version in $MANIFEST to $TAG before tagging."
             exit 1
           fi
@@ -355,11 +381,17 @@ jobs:
 
       - name: Resolve version
         id: ver
+        env:
+          PREFIX: ${{ inputs.tag_prefix }}
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          # workflow_dispatch (any branch) → dev-<sha>; tag push (v*) → keep ref_name.
-          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+          # workflow_dispatch (any branch) → dev-<sha>; tag push → the tag with
+          # any component prefix stripped, so `hc-yolink-v0.1.11` and a
+          # single-crate repo's `v0.1.11` both yield `v0.1.11` and archive names
+          # are identical either way.
+          if [[ "${GITHUB_REF}" != refs/tags/${PREFIX}v* ]]; then
               VERSION="dev-$(git rev-parse --short HEAD)"
+          else
+              VERSION="${GITHUB_REF_NAME#${PREFIX}}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -384,11 +416,15 @@ jobs:
               KIND_ARGS="--kind plugin --name ${{ inputs.binary_name }}"
           fi
 
+          # --source is where config/ and README.md are read from, which in a
+          # monorepo is the component's directory, not the repo root. --bin is
+          # already an absolute-ish path from the root, so the build output is
+          # found either way.
           .hc-scripts/build-archive.sh \
               $KIND_ARGS \
               --target "${{ matrix.target }}" \
               --version "${{ steps.ver.outputs.version }}" \
-              --source "$PWD" \
+              --source "$PWD/${{ inputs.source_dir }}" \
               --bin "$BIN_PATH" \
               --out dist
 
@@ -414,7 +450,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      github.event_name == 'push' &&
+      startsWith(github.ref, format('refs/tags/{0}v', inputs.tag_prefix))
     permissions:
       contents: write
 
@@ -458,7 +495,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'repository_dispatch' ||
        (github.event_name == 'push' && (
-         startsWith(github.ref, 'refs/tags/v') ||
+         startsWith(github.ref, format('refs/tags/{0}v', inputs.tag_prefix)) ||
          github.ref == 'refs/heads/develop'
        )))
     permissions:
@@ -481,7 +518,8 @@ jobs:
           # (for "always pull newest dispatched"). main pushes don't
           # reach this job (gated above) since main is just a release-
           # marker FF target.
-          if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          PREFIX="${{ inputs.tag_prefix }}"
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/${PREFIX}v* ]]; then
               # Strip the leading `v` from the git tag so image tags use the
               # bare version (`0.1.0`), matching the convention in
               # homeCore-io/docker compose files. The git tag itself stays as
@@ -489,7 +527,7 @@ jobs:
               # Push BOTH the immutable version tag and the rolling :latest
               # tag, so a compose file can track stable without naming a
               # version while an operator who wants to pin still can.
-              TAG="${GITHUB_REF_NAME#v}"
+              TAG="${GITHUB_REF_NAME#${PREFIX}v}"
               TAGS=$(printf '%s\n%s' "${BASE}:${TAG}" "${BASE}:latest")
           else
               TAG="dev-${GITHUB_SHA::7}"
@@ -700,7 +738,8 @@ jobs:
       always() &&
       needs.release.result == 'success' &&
       inputs.publish_registry == true &&
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      github.event_name == 'push' &&
+      startsWith(github.ref, format('refs/tags/{0}v', inputs.tag_prefix))
     permissions:
       contents: write
     steps:
@@ -715,8 +754,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"          # v0.2.0
-          VER="${TAG#v}"                          # 0.2.0
+          TAG="${{ github.ref_name }}"            # v0.2.0, or hc-wled-v0.2.0
+          PREFIX="${{ inputs.tag_prefix }}"       # '' or hc-wled-
+          VER="${TAG#${PREFIX}v}"                 # 0.2.0 either way
           BIN="${{ inputs.binary_name }}"         # hc-wled
           BARE="${BIN#hc-}"                       # wled
           ID="plugin.${BARE}"
