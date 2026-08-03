@@ -56,6 +56,16 @@ on:
         description: 'Cargo binary target to build (also the archive prefix).'
         required: true
         type: string
+      version_manifest:
+        description: >-
+          Manifest whose [package] version must match the release tag. Defaults
+          to the repo-root Cargo.toml, which is right whenever the root is also
+          the package. Set it when the root is a pure [workspace] and the binary
+          is a member — homeCore passes `homecore/Cargo.toml`. Only the version
+          gate reads this; the build still runs at the repo root.
+        required: false
+        default: 'Cargo.toml'
+        type: string
       config_example:
         description: 'Path to config example file to include under config/ in the archive. Empty to skip.'
         required: false
@@ -201,19 +211,32 @@ jobs:
       # at this step before any wasted compile work.
       - name: Verify Cargo.toml version matches tag
         if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          MANIFEST: ${{ inputs.version_manifest }}
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          PKG_VERSION=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::version_manifest '$MANIFEST' does not exist in this repo."
+            exit 1
+          fi
+          # Read the version out of [package] specifically. A bare `grep ^version`
+          # would also match [workspace.package], and in a workspace-root manifest
+          # it matches nothing at all.
+          PKG_VERSION=$(awk '
+            /^\[/            { in_pkg = ($0 ~ /^\[package\]/) }
+            in_pkg && /^version[[:space:]]*=/ {
+              sub(/^version[[:space:]]*=[[:space:]]*"/, ""); sub(/".*/, ""); print; exit
+            }' "$MANIFEST")
           if [ -z "$PKG_VERSION" ]; then
-            echo "::error::Could not parse package version from Cargo.toml"
+            echo "::error::Could not parse a [package] version from $MANIFEST"
             exit 1
           fi
           if [ "$TAG" != "$PKG_VERSION" ]; then
-            echo "::error::Tag v$TAG does not match Cargo.toml version $PKG_VERSION."
-            echo "::error::Bump the [package] version in Cargo.toml to $TAG before tagging."
+            echo "::error::Tag v$TAG does not match $MANIFEST version $PKG_VERSION."
+            echo "::error::Bump the [package] version in $MANIFEST to $TAG before tagging."
             exit 1
           fi
-          echo "Tag v$TAG matches Cargo.toml version $PKG_VERSION ✓"
+          echo "Tag v$TAG matches $MANIFEST version $PKG_VERSION ✓"
 
       # No QEMU: the only target is amd64 and the runner is amd64, so the
       # rust:alpine build container runs natively. Re-add
