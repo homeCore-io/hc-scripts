@@ -1,113 +1,197 @@
-# HomeCore workspace — CI orchestration
+# HomeCore workspace — local dev orchestration
+#
+# core/ is now one cargo workspace holding the server, its crates, the Rust SDK
+# and every plugin, so "check everything Rust" is a single command inside it.
+# What is left out here is genuinely separate: the Flutter app, the TUI, and the
+# non-Rust SDKs.
+#
+# The three meta-workspace manifests (plugins/, clients/, sdks/Cargo.toml) this
+# file used to drive are gone. They existed to give repos a shared lockfile and
+# target dir, and cost more than they saved — a member repo's own Cargo.lock was
+# never the one cargo wrote, and features unified across members that never ship
+# together. See core/docs/monorepo-plan.md.
 #
 # Usage:
-#   just check            # fmt + clippy + test across core + all plugins
-#   just check-core       # core only
-#   just check-plugins    # all plugins
-#   just check-plugin hc-hue  # single plugin
-#   just fmt / clippy / test  # single step across everything
-#   just build            # debug build everything
-#   just build-release    # release build everything
+#   just check                   # fmt + clippy + test, everything Rust
+#   just check-core              # the workspace: server, crates, SDK, plugins
+#   just check-plugin hc-hue     # one member of it
+#   just check-clients           # hc-tui and hc-web-leptos, each standalone
+#   just fmt / clippy / test     # one step across everything
+#   just build                   # debug build everything
+#   just build-release           # release build everything
 
-core_dir   := "core"
-plugin_dir := "plugins"
+core_dir    := "core"
+clients_dir := "clients"
 
-plugins := "hc-caseta hc-ecowitt hc-hue hc-isy hc-lutron hc-roku hc-sonos hc-wled hc-yolink hc-zwave"
+# The Rust clients that are still their own repos. Each has its own lockfile
+# and is built on its own — there is no clients workspace any more.
+rust_clients := "hc-tui hc-web-leptos"
+
+# Strict-but-pragmatic clippy lints, matching per-plugin Justfile defaults.
+clippy_flags := "-D clippy::correctness -D clippy::suspicious -A clippy::type_complexity -A clippy::too_many_arguments"
+
+# Destination for `deploy-local*` recipes. Override with: DEPLOY_DEST=/path just deploy-local
+DEPLOY_DEST := env_var_or_default("DEPLOY_DEST", "/var/tmp/homeCore")
 
 # ── Full CI ──────────────────────────────────────────────────────────────────
 
-# Run all CI checks across core and plugins
-check: check-core check-plugins
-
-# Build every meta-layout repo standalone, the way CI does.
-#
-# `check` builds through the meta workspaces, which unifies features across
-# members and resolves against the shared lock — so it cannot see a repo whose
-# own lockfile is stale, or one that relies on a sibling to enable a feature on
-# a shared dependency. Run this before pushing a dependency or feature change.
-check-standalone:
-    @{{justfile_directory()}}/verify-standalone.sh
+# Run all CI checks across everything Rust
+check: check-core check-clients
 
 # ── Core ─────────────────────────────────────────────────────────────────────
 
-# Run all checks on core
+# The whole Rust workspace: server, 17 crates, the SDK, 13 plugins.
 check-core:
-    @echo "==> core: check"
+    @echo "==> core workspace: check"
     just -f {{core_dir}}/Justfile check
 
-# ── Plugins ──────────────────────────────────────────────────────────────────
-
-# Run all checks on every plugin
-check-plugins:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    failed=()
-    for p in {{plugins}}; do
-        echo "==> $p: check"
-        if just -f {{plugin_dir}}/$p/Justfile check; then
-            echo "    [ok] $p"
-        else
-            echo "    [FAIL] $p"
-            failed+=("$p")
-        fi
-        echo
-    done
-    if [[ ${#failed[@]} -gt 0 ]]; then
-        echo "==> FAILED: ${failed[*]}"
-        exit 1
-    fi
-    echo "==> All plugins passed"
-
-# Run checks on a single plugin
+# One member of it — a plugin, a crate, the SDK.
 check-plugin name:
     @echo "==> {{name}}: check"
-    just -f {{plugin_dir}}/{{name}}/Justfile check
+    cargo fmt --manifest-path {{core_dir}}/Cargo.toml -p {{name}} -- --check
+    cargo clippy --manifest-path {{core_dir}}/Cargo.toml -p {{name}} --all-targets -- {{clippy_flags}}
+    cargo test --manifest-path {{core_dir}}/Cargo.toml -p {{name}}
 
-# ── Individual steps (all repos) ─────────────────────────────────────────────
+# ── Rust clients (separate repos, each with its own lockfile) ────────────────
+#
+# --locked deliberately: standalone is the only way these build now, so a
+# lockfile that has drifted from Cargo.toml should fail here rather than in CI.
 
-# Check formatting everywhere
+check-clients: fmt-clients clippy-clients test-clients
+
+fmt-clients:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for c in {{rust_clients}}; do
+      echo "==> $c: fmt"
+      cargo fmt --manifest-path {{clients_dir}}/$c/Cargo.toml --all -- --check
+    done
+
+clippy-clients:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for c in {{rust_clients}}; do
+      echo "==> $c: clippy"
+      cargo clippy --locked --manifest-path {{clients_dir}}/$c/Cargo.toml --all-targets -- {{clippy_flags}}
+    done
+
+test-clients:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for c in {{rust_clients}}; do
+      echo "==> $c: test"
+      cargo test --locked --manifest-path {{clients_dir}}/$c/Cargo.toml
+    done
+
+# ── Aggregate "everything" recipes ───────────────────────────────────────────
+
 fmt:
-    #!/usr/bin/env bash
-    set -euo pipefail
     just -f {{core_dir}}/Justfile fmt
-    for p in {{plugins}}; do
-        just -f {{plugin_dir}}/$p/Justfile fmt
-    done
+    @just fmt-clients
 
-# Run clippy everywhere
 clippy:
-    #!/usr/bin/env bash
-    set -euo pipefail
     just -f {{core_dir}}/Justfile clippy
-    for p in {{plugins}}; do
-        just -f {{plugin_dir}}/$p/Justfile clippy
-    done
+    @just clippy-clients
 
-# Run tests everywhere
 test:
-    #!/usr/bin/env bash
-    set -euo pipefail
     just -f {{core_dir}}/Justfile test
-    for p in {{plugins}}; do
-        just -f {{plugin_dir}}/$p/Justfile test
-    done
+    @just test-clients
 
 # ── Builds ───────────────────────────────────────────────────────────────────
 
-# Debug build everything
 build:
     #!/usr/bin/env bash
     set -euo pipefail
     just -f {{core_dir}}/Justfile build
-    for p in {{plugins}}; do
-        just -f {{plugin_dir}}/$p/Justfile build
-    done
+    for c in {{rust_clients}}; do cargo build --locked --manifest-path {{clients_dir}}/$c/Cargo.toml; done
 
-# Release build everything
 build-release:
     #!/usr/bin/env bash
     set -euo pipefail
     just -f {{core_dir}}/Justfile build-release
-    for p in {{plugins}}; do
-        just -f {{plugin_dir}}/$p/Justfile build-release
-    done
+    for c in {{rust_clients}}; do cargo build --locked --release --manifest-path {{clients_dir}}/$c/Cargo.toml; done
+
+# ── Local deploy ─────────────────────────────────────────────────────────────
+#
+# Build + install a prod-like layout to $DEPLOY_DEST (default /var/tmp/homeCore).
+# Use this to smoke-test installs locally before tagging a release.
+#
+# Examples:
+#   just deploy-local                            # all components, release build
+#   just deploy-local --debug                    # debug build (faster)
+#   just deploy-local hc-yolink hc-hue           # only those plugins
+#   just deploy-local --force-config --all       # overwrite preserved configs
+#   DEPLOY_DEST=/tmp/hc just deploy-local        # custom destination
+#   just deploy-local-run                        # deploy then run from $DEPLOY_DEST
+
+deploy-local *args="--all":
+    ./hc-scripts/deploy.sh --dest {{DEPLOY_DEST}} {{args}}
+
+deploy-local-run *args="--all":
+    ./hc-scripts/deploy.sh --dest {{DEPLOY_DEST}} {{args}}
+    @echo
+    @echo "==> Starting {{DEPLOY_DEST}}/bin/homecore --home {{DEPLOY_DEST}}"
+    @echo
+    {{DEPLOY_DEST}}/bin/homecore --home {{DEPLOY_DEST}}
+
+# ── Sandbox (local HOMECORE_HOME dev instance) ───────────────────────────────
+#
+# `just sandbox`      build the homecore binary (incremental — instant when
+#                     unchanged, so you never launch a stale core) then run.
+# `just sandbox-run`  run the existing binary without building (fastest).
+# `just sandbox-build` rebuild + reinstall all managed plugins too, then run
+#                     (use after changing plugin code).
+# Plugins otherwise run from their installed copies under sandbox/plugins/.
+
+sandbox_home := justfile_directory() / "sandbox"
+homecore_bin := justfile_directory() / "core/target/debug/homecore"
+
+# Build homecore, then run the sandbox instance
+sandbox:
+    cargo build --manifest-path core/Cargo.toml --bin homecore
+    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/homecore.toml
+
+# Run the sandbox without building (fastest)
+sandbox-run:
+    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/homecore.toml
+
+# Rebuild everything, reinstall managed plugins into the sandbox, then run
+sandbox-build:
+    cargo build --manifest-path core/Cargo.toml --workspace
+    ./sandbox/reinstall-plugins.sh
+    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/homecore.toml
+
+# ── hc-web Flutter dev (one command: backend + proxy + hot reload) ────────────
+#
+# `just hc-web-dev` brings the whole hc-web dev loop up, then open
+# http://localhost:3001 in a browser (login: admin / see sandbox/INITIAL_ADMIN_PASSWORD):
+#   - sandbox homeCore backend on :8080 (started only if not already healthy)
+#   - dev.mjs same-origin proxy on :3001 (app + /api, no CORS)
+#   - flutter run web-server on :5001 with hot reload (foreground)
+#
+# --no-web-resources-cdn is REQUIRED: the debug build otherwise loads CanvasKit
+# from the gstatic CDN, whose variant renders a BLANK page in real browsers.
+# Ctrl-C stops flutter run + the proxy; the sandbox backend is left running.
+
+flutter_bin := "/home/john/flutter/bin"
+hc_web_dir  := justfile_directory() / "clients/hc-web"
+
+hc-web-dev:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export PATH="{{flutter_bin}}:$PATH"
+    NODE="$(mise which node 2>/dev/null || echo node)"
+    if curl -sf -m 2 http://127.0.0.1:8080/api/v1/health >/dev/null 2>&1; then
+      echo "==> sandbox backend already up (:8080)"
+    else
+      echo "==> starting sandbox backend (:8080) — log: /tmp/hc-sandbox.log"
+      ( "{{homecore_bin}}" --home "{{sandbox_home}}" --config "{{sandbox_home}}/homecore.toml" >/tmp/hc-sandbox.log 2>&1 & )
+      for i in $(seq 1 30); do curl -sf -m 2 http://127.0.0.1:8080/api/v1/health >/dev/null 2>&1 && break; sleep 1; done
+    fi
+    cd "{{hc_web_dir}}"
+    HOMECORE_URL=http://127.0.0.1:8080 "$NODE" tool/dev.mjs >/tmp/hc-web-proxy.log 2>&1 &
+    PROXY=$!
+    trap 'kill $PROXY 2>/dev/null || true' EXIT
+    echo "==> proxy on http://localhost:3001  (open this)"
+    echo "==> starting flutter run (hot reload — press r to reload, q to quit)"
+    flutter run -d web-server --web-port 5001 --web-hostname 127.0.0.1 --no-web-resources-cdn
