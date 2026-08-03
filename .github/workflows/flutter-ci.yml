@@ -37,7 +37,10 @@ on:
           Dockerfile fetches the SDK tarball directly rather than using
           ghcr.io/cirruslabs/flutter (which bundles ~2 GB of Android SDK a web
           build never touches), so the pin can be a real SDK version rather than
-          whatever that registry last published.'
+          whatever that registry last published.
+
+          The literal "stable" is accepted as a sentinel meaning "newest on the
+          stable channel". Only the canary should pass it — CI pins on purpose.'
         required: false
         default: "3.44.4"
         type: string
@@ -90,10 +93,26 @@ jobs:
       - name: Install Flutter ${{ inputs.flutter_version }}
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ inputs.flutter_version }}
-          # "stable" is the channel; the version above pins within it. The canary
-          # caller passes flutter_version: stable, which resolves to the newest
-          # stable release rather than a pin.
+          # An explicit version pins within the channel; an EMPTY version means
+          # "newest on the channel".
+          #
+          # This used to pass `flutter_version` straight through, with a comment
+          # claiming that the canary's `flutter_version: stable` "resolves to
+          # the newest stable release". It does not. `stable` is a channel name,
+          # not a version, and subosito/flutter-action resolves this input
+          # against a release manifest — so it failed outright, in ~150ms,
+          # before checking out an SDK or compiling anything:
+          #
+          #     Unable to determine Flutter version for channel: stable
+          #     version: stable architecture: x64
+          #
+          # So the canary never ran once. It exists to warn that stable moved
+          # before a pin bump makes every new lint and deprecation arrive at
+          # once (hc-web paid exactly that bill with `onReorder`), and instead
+          # it sat red for a reason that had nothing to do with Flutter. A job
+          # that is permanently red is one everyone learns to skip, which is
+          # worse than not having it.
+          flutter-version: ${{ inputs.flutter_version == 'stable' && '' || inputs.flutter_version }}
           channel: stable
           cache: true
 
