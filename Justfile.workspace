@@ -19,6 +19,15 @@ plugins := "hc-caseta hc-ecowitt hc-hue hc-isy hc-lutron hc-roku hc-sonos hc-wle
 # Run all CI checks across core and plugins
 check: check-core check-plugins
 
+# Build every meta-layout repo standalone, the way CI does.
+#
+# `check` builds through the meta workspaces, which unifies features across
+# members and resolves against the shared lock — so it cannot see a repo whose
+# own lockfile is stale, or one that relies on a sibling to enable a feature on
+# a shared dependency. Run this before pushing a dependency or feature change.
+check-standalone:
+    @{{justfile_directory()}}/verify-standalone.sh
+
 # ── Core ─────────────────────────────────────────────────────────────────────
 
 # Run all checks on core
