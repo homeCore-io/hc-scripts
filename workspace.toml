@@ -28,6 +28,15 @@ name   = "hc-matter"
 path   = "plugins/hc-matter"
 remote = "git@github.com:homeCore-io/hc-matter.git"
 
+# Every Python plugin, in one repo — the same shape core/plugins/ has for the
+# Rust ones, and for the same reason: thirteen near-identical plugin repos each
+# carrying a copy of one workflow is what the monorepo migration undid.
+[[repo]]
+role   = "plugin"
+name   = "hc-plugins-py"
+path   = "plugins-py"
+remote = "git@github.com:homeCore-io/hc-plugins-py.git"
+
 [[repo]]
 role   = "sdk"
 name   = "hc-plugin-sdk-py"
