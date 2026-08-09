@@ -1,0 +1,300 @@
+# Reusable release workflow for homeCore Python plugins.
+#
+# The Rust equivalent builds a static binary; there is no such thing here. A
+# Python plugin ships as a hermetic artifact — the plugin, the SDK, and every
+# dependency as a wheel — that a plugin runtime installs offline. See
+# `docs/pluginRuntimesPlan.md` in core, piece 3.
+#
+# Almost nothing lives in this file. The build is `build-python-artifact.sh` and
+# the check is `smoke-python-artifact.sh`, both in this repo, both runnable on a
+# laptop. That is deliberate: the two traps these scripts guard against were
+# found by running them by hand, and neither would have been found by reading
+# YAML.
+#
+# The two traps, since they decide the shape of this pipeline:
+#
+#   1. `--platform` matches wheel tags exactly, and `--only-binary=:all:` does
+#      NOT make a missing wheel loud — pip backtracks to an old release that
+#      happens to carry the tag. Fixed by locking first, with hashes.
+#   2. A lock resolved on the builder's Python omits dependencies whose markers
+#      exclude it, and the artifact then fails to install on its target. Fixed
+#      by building on the target interpreter.
+#
+# Both produce a green build and an artifact that does not work, which is why
+# install-and-run is a release gate here rather than a nicety.
+#
+# Caller example:
+#   # hc-plugins-py/.github/workflows/release.yml
+#   name: Release
+#   on:
+#     push:
+#       tags: ['hc-*-v*']
+#     workflow_dispatch:
+#   jobs:
+#     release:
+#       uses: homeCore-io/hc-scripts/.github/workflows/python-release.yml@main
+#       with:
+#         plugin_dir: plugins/hc-virtuallight
+#       secrets: inherit
+
+name: python-release
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_call:
+    inputs:
+      plugin_dir:
+        description: 'Directory holding the plugin pyproject.toml.'
+        required: true
+        type: string
+
+      # ─── The ABI is pinned centrally, on purpose ─────────────────────────
+      # One ABI per homeCore minor. Defaulting here rather than per plugin is
+      # what stops a plugin drifting onto its own interpreter version by
+      # accident: bumping Python is one edit that moves the whole fleet.
+      python_version:
+        description: 'Target interpreter. Changing this moves every plugin.'
+        default: '3.12'
+        type: string
+      manylinux:
+        description: 'manylinux baseline recorded in the ABI tag.'
+        default: 'manylinux_2_28'
+        type: string
+      arches:
+        description: 'JSON array of architectures to build.'
+        default: '["x86_64", "aarch64"]'
+        type: string
+
+      sdk_repo:
+        description: 'Python SDK repository.'
+        default: 'homeCore-io/hc-plugin-sdk-py'
+        type: string
+      sdk_ref:
+        description: >-
+          SDK tag to build into every artifact. Pinned centrally for the same
+          reason the ABI is — the SDK is not on any index, so this is the only
+          thing that says which version a plugin actually ships.
+        default: 'v0.2.0'
+        type: string
+
+      publish_registry:
+        description: 'Notify the registry and verify the entry is served.'
+        default: true
+        type: boolean
+      registry_repo:
+        default: 'homeCore-io/registry'
+        type: string
+      registry_index_url:
+        default: 'https://homeCore-io.github.io/registry/index.json'
+        type: string
+      registry_verify_timeout_secs:
+        default: 600
+        type: number
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(inputs.arches) }}
+    outputs:
+      plugin_id: ${{ steps.build.outputs.plugin_id }}
+      version: ${{ steps.build.outputs.version }}
+      abi: ${{ steps.build.outputs.abi }}
+      description: ${{ steps.build.outputs.description }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out the SDK at its pinned tag
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.sdk_repo }}
+          ref: ${{ inputs.sdk_ref }}
+          path: .sdk
+
+      - uses: actions/checkout@v7
+        with:
+          repository: homeCore-io/hc-scripts
+          ref: main
+          path: .hc-scripts
+
+      # The build script provisions the target interpreter itself, so nothing
+      # here has to agree with it about which Python is in play.
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Build the artifact
+        id: build
+        run: |
+          .hc-scripts/build-python-artifact.sh \
+            --plugin "${{ inputs.plugin_dir }}" \
+            --sdk .sdk \
+            --python-version "${{ inputs.python_version }}" \
+            --abi "cp$(echo '${{ inputs.python_version }}' | tr -d .)-${{ inputs.manylinux }}" \
+            --arch "${{ matrix.arch }}" \
+            --out dist
+
+      # A green build is not a shipped plugin, and here "it compiled" does not
+      # exist as a signal at all. On a native runner this installs the artifact
+      # offline and waits for the plugin to register; on a foreign architecture
+      # it skips and says so, which is what keeps the release notes honest.
+      - name: Start a scratch broker
+        if: matrix.arch == 'x86_64'
+        run: |
+          docker run -d --name broker -p 1883:1883 eclipse-mosquitto:2 \
+            sh -c 'printf "listener 1883\nallow_anonymous true\n" > /m.conf && mosquitto -c /m.conf'
+          for i in $(seq 1 30); do
+            docker exec broker sh -c 'nc -z 127.0.0.1 1883' && break
+            sleep 1
+          done
+
+      - name: Install it and prove it runs
+        run: |
+          .hc-scripts/smoke-python-artifact.sh \
+            --artifact "${{ steps.build.outputs.artifact }}" \
+            --python-version "${{ inputs.python_version }}" \
+            --broker-host 127.0.0.1 --broker-port 1883
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: artifact-${{ matrix.arch }}
+          path: |
+            dist/*.tar.zst
+          if-no-files-found: error
+
+      - name: Record what this build produced
+        run: |
+          {
+            echo "arch=${{ matrix.arch }}"
+            echo "sha256=${{ steps.build.outputs.sha256 }}"
+            echo "size=${{ steps.build.outputs.size }}"
+            echo "executed=${{ matrix.arch == 'x86_64' }}"
+          } > "dist/${{ matrix.arch }}.meta"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: meta-${{ matrix.arch }}
+          path: dist/*.meta
+
+  release:
+    name: release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: '*'
+          path: incoming
+          merge-multiple: true
+
+      # aarch64 ships built and resolved but not executed wherever no arm64
+      # runner was available. Saying so beats implying parity.
+      - name: Note which architectures were actually run
+        id: notes
+        run: |
+          set -euo pipefail
+          {
+            echo "### Architectures"
+            echo
+            for m in incoming/*.meta; do
+              . "$m"
+              if [ "$executed" = "true" ]; then
+                echo "- \`$arch\` — built, resolved and **run** (installed offline, registered with a broker)"
+              else
+                echo "- \`$arch\` — built and resolved, **not executed** (no native runner)"
+              fi
+            done
+          } > notes.md
+          cat notes.md
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: incoming/*.tar.zst
+          body_path: notes.md
+
+      # Dispatching is not publishing, so this ends by reading the served index
+      # rather than by reporting that a message was sent — the same rule
+      # rust-release.yml learned when ten green releases left six plugins
+      # missing from the catalogue.
+      - name: Publish to the plugin registry
+        if: inputs.publish_registry
+        env:
+          GH_TOKEN: ${{ secrets.REGISTRY_DISPATCH_PAT }}
+          PLUGIN_ID: ${{ needs.build.outputs.plugin_id }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ABI: ${{ needs.build.outputs.abi }}
+          DESCRIPTION: ${{ needs.build.outputs.description }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::REGISTRY_DISPATCH_PAT is not set, so this plugin will NOT be installable, but publish_registry is true — which asked for exactly that."
+            exit 1
+          fi
+          for m in incoming/*.meta; do
+            . "$m"
+            url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/${PLUGIN_ID}-${VERSION}-python-${ABI}-${arch}.tar.zst"
+            gh api "repos/${{ inputs.registry_repo }}/dispatches" \
+              -f event_type=publish-plugin \
+              -F "client_payload[id]=${PLUGIN_ID}" \
+              -F "client_payload[name]=${PLUGIN_ID}" \
+              -F "client_payload[version]=${VERSION}" \
+              -F "client_payload[os]=linux" \
+              -F "client_payload[arch]=${arch}" \
+              -F "client_payload[url]=${url}" \
+              -F "client_payload[sha256]=${sha256}" \
+              -F "client_payload[size]=${size}" \
+              -F "client_payload[runtime]=python" \
+              -F "client_payload[abi]=${ABI}" \
+              -F "client_payload[description]=${DESCRIPTION}"
+            echo "Notified ${{ inputs.registry_repo }}: ${PLUGIN_ID} ${VERSION} ${arch}"
+          done
+
+      - name: Verify it reached the registry index
+        if: inputs.publish_registry
+        env:
+          INDEX_URL: ${{ inputs.registry_index_url }}
+          TIMEOUT_SECS: ${{ inputs.registry_verify_timeout_secs }}
+          PLUGIN_ID: ${{ needs.build.outputs.plugin_id }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ABI: ${{ needs.build.outputs.abi }}
+        run: |
+          set -uo pipefail
+          deadline=$(( SECONDS + TIMEOUT_SECS ))
+          attempt=0
+          while :; do
+            attempt=$(( attempt + 1 ))
+            # Pages sits behind a CDN; bust it per attempt or this polls a copy
+            # from before the deploy and times out against an index that
+            # already has the entry.
+            body="$(curl -fsSL --max-time 30 -H 'Cache-Control: no-cache' \
+                      "${INDEX_URL}?cb=${GITHUB_RUN_ID}-${attempt}" 2>/dev/null)"
+            missing=""
+            for m in incoming/*.meta; do
+              . "$m"
+              found="$(printf '%s' "${body:-}" | jq -r --arg id "$PLUGIN_ID" --arg v "$VERSION" \
+                --arg arch "$arch" --arg abi "$ABI" --arg sha "$sha256" '
+                  [ .plugins[]? | select(.id == $id)
+                    | .versions[]? | select(.version == $v)
+                    | .artifacts[]? | select(.arch == $arch and .runtime == "python" and .abi == $abi and .sha256 == $sha)
+                  ] | length' 2>/dev/null)"
+              [ "${found:-0}" -ge 1 ] || missing="$missing $arch"
+            done
+            if [ -z "$missing" ]; then
+              echo "Published and verified after ${attempt} attempt(s)."
+              exit 0
+            fi
+            if [ $SECONDS -ge $deadline ]; then
+              echo "::error::${PLUGIN_ID} ${VERSION} never appeared in the served index for:${missing}. The release exists but is NOT installable."
+              exit 1
+            fi
+            sleep 15
+          done

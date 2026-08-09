@@ -760,6 +760,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Needed for the plugin's Cargo.toml — the registry entry's description
+      # comes from it, and without a checkout there is no manifest to read.
+      - uses: actions/checkout@v7
+
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
@@ -769,6 +773,7 @@ jobs:
         id: pkg
         env:
           GH_TOKEN: ${{ github.token }}
+          MANIFEST: ${{ inputs.version_manifest }}
         run: |
           set -euo pipefail
           TAG="${{ github.ref_name }}"            # v0.2.0, or hc-wled-v0.2.0
@@ -779,6 +784,17 @@ jobs:
           ID="plugin.${BARE}"
           NAME="$(echo "$BARE" | sed 's/.*/\u&/')"   # Wled (cosmetic; UI humanizes the id)
           OS="linux"; ARCH="x86_64"; PLATFORM="${OS}-${ARCH}"
+
+          # `package.description` from the plugin's own manifest becomes the
+          # subtitle on its card in Plugins -> Add. Every registry entry carried
+          # an empty description until this was forwarded, so the catalog showed
+          # eleven bare names. Parsed with tomllib rather than sed: a description
+          # is prose, and quoting it by hand is how you get a truncated one.
+          DESC=""
+          if [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ]; then
+            DESC="$(python3 -c 'import tomllib,sys;print(tomllib.load(open(sys.argv[1],"rb")).get("package",{}).get("description",""))' "$MANIFEST")"
+          fi
+          [ -n "$DESC" ] || echo "::warning::no package.description in ${MANIFEST:-<unset>}; this plugin will show as a bare name in the registry catalog"
 
           # Pull the binary out of the release .tar.gz (homecore/plugins/<name>/<bin>).
           # Version-agnostic match: build-archive.sh names it <bin>-<TAG>-<platform>
@@ -807,6 +823,9 @@ jobs:
             echo "id=$ID"; echo "name=$NAME"; echo "version=$VER"
             echo "os=$OS"; echo "arch=$ARCH"; echo "sha256=$SHA"; echo "size=$SIZE"
             echo "url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ART}"
+            # Heredoc form: a description is free text and may contain anything
+            # except the delimiter, which `key=value` cannot survive.
+            echo "description<<__HC_DESC__"; echo "$DESC"; echo "__HC_DESC__"
           } >> "$GITHUB_OUTPUT"
 
       - name: Notify registry to index it
@@ -814,6 +833,10 @@ jobs:
           # Cross-repo dispatch needs a PAT with actions:write on the registry
           # repo; the per-repo GITHUB_TOKEN can't reach another repository.
           GH_TOKEN: ${{ secrets.REGISTRY_DISPATCH_PAT }}
+          # Through the environment, not interpolated into the script: a
+          # description is prose from a manifest, and `${{ }}` splices it into
+          # the shell source where a quote or a backtick would run as code.
+          DESC: ${{ steps.pkg.outputs.description }}
         run: |
           set -euo pipefail
           # A missing secret used to warn and pass. That left the one way a
@@ -833,7 +856,7 @@ jobs:
             echo "  gh secret set REGISTRY_DISPATCH_PAT --org \${ORG} --visibility all"
             echo "The PAT needs actions:write on ${{ inputs.registry_repo }}; the per-repo GITHUB_TOKEN cannot reach another repository."
             echo "To publish this build without re-running the release:"
-            echo "  gh workflow run publish.yml --repo ${{ inputs.registry_repo }} -f id=${{ steps.pkg.outputs.id }} -f name='${{ steps.pkg.outputs.name }}' -f version=${{ steps.pkg.outputs.version }} -f os=${{ steps.pkg.outputs.os }} -f arch=${{ steps.pkg.outputs.arch }} -f url=${{ steps.pkg.outputs.url }} -f sha256=${{ steps.pkg.outputs.sha256 }} -f size=${{ steps.pkg.outputs.size }}"
+            echo "  gh workflow run publish.yml --repo ${{ inputs.registry_repo }} -f id=${{ steps.pkg.outputs.id }} -f name='${{ steps.pkg.outputs.name }}' -f version=${{ steps.pkg.outputs.version }} -f os=${{ steps.pkg.outputs.os }} -f arch=${{ steps.pkg.outputs.arch }} -f url=${{ steps.pkg.outputs.url }} -f sha256=${{ steps.pkg.outputs.sha256 }} -f size=${{ steps.pkg.outputs.size }} -f description=\"\${DESC}\""
             exit 1
           fi
           gh api "repos/${{ inputs.registry_repo }}/dispatches" \
@@ -845,7 +868,8 @@ jobs:
             -F "client_payload[arch]=${{ steps.pkg.outputs.arch }}" \
             -F "client_payload[url]=${{ steps.pkg.outputs.url }}" \
             -F "client_payload[sha256]=${{ steps.pkg.outputs.sha256 }}" \
-            -F "client_payload[size]=${{ steps.pkg.outputs.size }}"
+            -F "client_payload[size]=${{ steps.pkg.outputs.size }}" \
+            -F "client_payload[description]=${DESC}"
           echo "Notified ${{ inputs.registry_repo }}: ${{ steps.pkg.outputs.id }} ${{ steps.pkg.outputs.version }}"
 
       # Phase 6: make a release prove it published.
