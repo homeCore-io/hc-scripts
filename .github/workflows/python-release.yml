@@ -87,7 +87,7 @@ on:
         default: 'homeCore-io/registry'
         type: string
       registry_index_url:
-        default: 'https://registry.homecore.io/index.json'
+        default: 'https://homeCore-io.github.io/registry/index.json'
         type: string
       registry_verify_timeout_secs:
         default: 600
