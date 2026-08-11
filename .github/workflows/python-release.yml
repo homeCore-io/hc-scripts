@@ -76,7 +76,12 @@ on:
           SDK tag to build into every artifact. Pinned centrally for the same
           reason the ABI is — the SDK is not on any index, so this is the only
           thing that says which version a plugin actually ships.
-        default: 'v0.2.0'
+
+          Moving this moves every plugin's next build, which is the point. It
+          also means a tag that predates something plugins need produces
+          artifacts that cannot start: v0.2.0 had no `from_config`, so a plugin
+          built against it could not read the config file homeCore hands it.
+        default: 'v0.3.0'
         type: string
 
       publish_registry:
