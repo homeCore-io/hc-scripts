@@ -19,6 +19,9 @@
 #   just fmt / clippy / test     # one step across everything
 #   just build                   # debug build everything
 #   just build-release           # release build everything
+#   just clean                   # cargo clean, everything Rust
+#   just clean-release           # cargo clean --release only
+#   just clean-all               # + flutter, logs, devenv/direnv caches
 
 core_dir    := "core"
 clients_dir := "clients"
@@ -111,6 +114,74 @@ build-release:
     just -f {{core_dir}}/Justfile build-release
     for c in {{rust_clients}}; do cargo build --locked --release --manifest-path {{clients_dir}}/$c/Cargo.toml; done
 
+# ── Clean ────────────────────────────────────────────────────────────────────
+#
+#   just clean           cargo clean everything Rust (core workspace + clients)
+#   just clean-core      the core workspace only
+#   just clean-clients   the standalone Rust clients only
+#   just clean-release   cargo clean --release only, everything Rust
+#   just clean-flutter   hc-web build/ + .dart_tool/ — by far the largest here
+#   just clean-logs      workspace logs/*.log
+#   just clean-env       devenv/direnv caches (.devenv/, .direnv/)
+#   just clean-all       clean + flutter + logs + env (clean-release is a subset
+#                        of clean, so it is not part of this)
+#
+# NOT touched by any of these, on purpose: sandbox/. It is a real
+# HOMECORE_HOME — config, registry, redb state, INITIAL_ADMIN_PASSWORD — and
+# not build output. Its binaries come back with `just sandbox-build`.
+#
+# clean-env does NOT run `devenv gc`: that collects unused generations across
+# every devenv project on the machine, not just this one. Run it by hand when
+# that is what you actually want.
+
+clean: clean-core clean-clients
+
+clean-core:
+    @echo "==> core workspace: cargo clean"
+    cargo clean --manifest-path {{core_dir}}/Cargo.toml
+
+clean-clients:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for c in {{rust_clients}}; do
+      echo "==> $c: cargo clean"
+      cargo clean --manifest-path {{clients_dir}}/$c/Cargo.toml
+    done
+
+# Release artifacts only, everything Rust — mirrors `cargo clean --release`.
+clean-release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> core workspace: cargo clean --release"
+    cargo clean --release --manifest-path {{core_dir}}/Cargo.toml
+    for c in {{rust_clients}}; do
+      echo "==> $c: cargo clean --release"
+      cargo clean --release --manifest-path {{clients_dir}}/$c/Cargo.toml
+    done
+
+# Needs flutter on PATH — devenv provides it.
+clean-flutter:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> hc-web: flutter clean"
+    cd "{{clients_dir}}/hc-web"
+    flutter clean
+
+clean-logs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> removing logs/*.log"
+    rm -f logs/*.log logs/*.log.*
+
+# Both are rebuilt automatically the next time direnv loads the workspace.
+clean-env:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> removing .devenv/ and .direnv/"
+    rm -rf .devenv .direnv
+
+clean-all: clean clean-flutter clean-logs clean-env
+
 # ── Local deploy ─────────────────────────────────────────────────────────────
 #
 # Build + install a prod-like layout to $DEPLOY_DEST (default /var/tmp/homeCore).
@@ -172,15 +243,16 @@ sandbox-build:
 # --no-web-resources-cdn is REQUIRED: the debug build otherwise loads CanvasKit
 # from the gstatic CDN, whose variant renders a BLANK page in real browsers.
 # Ctrl-C stops flutter run + the proxy; the sandbox backend is left running.
+#
+# flutter and node come from devenv (see devenv.nix) — this recipe no longer
+# prepends a hardcoded ~/flutter/bin or resolves node through mise, both of
+# which were left over from the Ubuntu period and are gone from this machine.
 
-flutter_bin := "/home/john/flutter/bin"
 hc_web_dir  := justfile_directory() / "clients/hc-web"
 
 hc-web-dev:
     #!/usr/bin/env bash
     set -uo pipefail
-    export PATH="{{flutter_bin}}:$PATH"
-    NODE="$(mise which node 2>/dev/null || echo node)"
     if curl -sf -m 2 http://127.0.0.1:8080/api/v1/health >/dev/null 2>&1; then
       echo "==> sandbox backend already up (:8080)"
     else
@@ -189,7 +261,7 @@ hc-web-dev:
       for i in $(seq 1 30); do curl -sf -m 2 http://127.0.0.1:8080/api/v1/health >/dev/null 2>&1 && break; sleep 1; done
     fi
     cd "{{hc_web_dir}}"
-    HOMECORE_URL=http://127.0.0.1:8080 "$NODE" tool/dev.mjs >/tmp/hc-web-proxy.log 2>&1 &
+    HOMECORE_URL=http://127.0.0.1:8080 node tool/dev.mjs >/tmp/hc-web-proxy.log 2>&1 &
     PROXY=$!
     trap 'kill $PROXY 2>/dev/null || true' EXIT
     echo "==> proxy on http://localhost:3001  (open this)"
