@@ -7,7 +7,7 @@
 #
 # There used to be a third, `appliance`, which merged core with every plugin
 # fragment into one tarball, and a --ui-dist flag that folded in the Leptos WASM
-# bundle. Both are gone: the UI is hc-web (its own container) and plugins install
+# bundle. Both are gone: the UI is hc-web-flutter (its own container) and plugins install
 # at runtime from the signed registry, so nothing produced or consumed either.
 #
 # Every archive's top-level directory is `homecore/` so users extract

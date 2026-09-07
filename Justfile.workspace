@@ -120,7 +120,7 @@ build-release:
 #   just clean-core      the core workspace only
 #   just clean-clients   the standalone Rust clients only
 #   just clean-release   cargo clean --release only, everything Rust
-#   just clean-flutter   hc-web build/ + .dart_tool/ — by far the largest here
+#   just clean-flutter   hc-web-flutter build/ + .dart_tool/ — by far the largest here
 #   just clean-logs      workspace logs/*.log
 #   just clean-env       devenv/direnv caches (.devenv/, .direnv/)
 #   just clean-all       clean + flutter + logs + env (clean-release is a subset
@@ -163,8 +163,8 @@ clean-release:
 clean-flutter:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "==> hc-web: flutter clean"
-    cd "{{clients_dir}}/hc-web"
+    echo "==> hc-web-flutter: flutter clean"
+    cd "{{clients_dir}}/hc-web-flutter"
     flutter clean
 
 clean-logs:
@@ -232,9 +232,9 @@ sandbox-build:
     ./sandbox/reinstall-plugins.sh
     {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/homecore.toml
 
-# ── hc-web Flutter dev (one command: backend + proxy + hot reload) ────────────
+# ── hc-web-flutter dev (one command: backend + proxy + hot reload) ────────────
 #
-# `just hc-web-dev` brings the whole hc-web dev loop up, then open
+# `just hc-web-dev` brings the whole hc-web-flutter dev loop up, then open
 # http://localhost:3001 in a browser (login: admin / see sandbox/INITIAL_ADMIN_PASSWORD):
 #   - sandbox homeCore backend on :8080 (started only if not already healthy)
 #   - dev.mjs same-origin proxy on :3001 (app + /api, no CORS)
@@ -248,7 +248,7 @@ sandbox-build:
 # prepends a hardcoded ~/flutter/bin or resolves node through mise, both of
 # which were left over from the Ubuntu period and are gone from this machine.
 
-hc_web_dir  := justfile_directory() / "clients/hc-web"
+hc_web_dir  := justfile_directory() / "clients/hc-web-flutter"
 
 hc-web-dev:
     #!/usr/bin/env bash

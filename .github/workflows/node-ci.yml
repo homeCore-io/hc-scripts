@@ -1,0 +1,179 @@
+# Reusable CI workflow for homeCore TypeScript/Node components.
+#
+# The third sibling of rust-ci.yml and flutter-ci.yml: typecheck + lint +
+# format + test + build on the calling repo. Each component wires its own
+# .github/workflows/ci.yml that calls into this one — fix the workflow here,
+# every component picks it up.
+#
+# Caller example:
+#   # hc-web-lit/.github/workflows/ci.yml
+#   name: CI
+#   on:
+#     push:
+#       branches: [main, develop]
+#     pull_request:
+#       branches: [main]
+#   permissions:
+#     contents: read
+#     issues: write
+#   jobs:
+#     ci:
+#       uses: homeCore-io/hc-scripts/.github/workflows/node-ci.yml@main
+#
+# The steps run npm SCRIPTS rather than tools directly. That is the seam: this
+# workflow owns the order and the gating, the component owns which linter and
+# which test runner it uses. A repo that swaps Vitest for something else edits
+# its own package.json and nothing here.
+
+name: node-ci
+
+# Opt JavaScript actions into Node.js 24 (default-on after 2026-06-02).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: 'Node.js to use. Pinned default — bump deliberately rather
+          than tracking "lts/*", so CI runs the runtime that actually ships.
+
+          Keep equal to `languages.javascript.package` in the workspace
+          devenv.nix, so a build that passes locally passes here for the same
+          reasons.'
+        required: false
+        default: "24"
+        type: string
+      run_tests:
+        description: 'Run npm test.'
+        required: false
+        default: true
+        type: boolean
+      run_build:
+        description: 'Run npm run build. Catches what typecheck does not —
+          unresolved dynamic imports, missing assets, and anything the bundler
+          only discovers while emitting.'
+        required: false
+        default: true
+        type: boolean
+      working_directory:
+        description: 'Directory holding package.json. Defaults to the repo root.'
+        required: false
+        default: '.'
+        type: string
+      ref:
+        description: 'Git ref to check out. Empty (the default) means the ref
+          that triggered the run — normal CI behavior. Scheduled runs always
+          fire on the default branch, so a canary caller passes "develop" to
+          check the branch work actually lands on.'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  ci:
+    name: typecheck + test + build
+    runs-on: ubuntu-latest
+    # issues:write so the failure/recovery notify steps below can open and close
+    # a tracking issue when develop goes red. Mirrors rust-ci.yml.
+    permissions:
+      contents: read
+      issues: write
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Report the Node actually installed
+        run: node --version && npm --version
+
+      # `ci` and not `install`: it installs exactly the lockfile and fails if
+      # package.json and the lock disagree. A CI run that silently resolved a
+      # different tree than the developer has is a CI run that proves nothing.
+      - name: npm ci
+        run: npm ci
+
+      # Separate from the build because `vite build` does NOT typecheck — esbuild
+      # strips types without reading them. Without this step a type error ships.
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: lint
+        run: npm run lint
+
+      # The format gate is its own step for the same reason dart format is in
+      # flutter-ci: a diff nobody can review is a diff that hides the change.
+      - name: format check
+        run: npm run format:check
+
+      - name: test
+        if: ${{ inputs.run_tests }}
+        run: npm test
+
+      - name: build
+        if: ${{ inputs.run_build }}
+        run: npm run build
+
+      # ── Develop CI is otherwise unwatched (no branch protection, no
+      # required-checks gate), so red status can rot for days. Open a single
+      # tracking issue per repo when develop fails and close it when develop
+      # recovers. Pull requests and main pushes skip this — PR red is already
+      # visible to the author, and main red would block merges anyway.
+      #
+      # Kept byte-identical to rust-ci.yml's steps on purpose: one behaviour for
+      # the org, whatever language a repo happens to be written in.
+      - name: Open tracking issue on develop failure
+        if: failure() && github.ref == 'refs/heads/develop' && github.event_name == 'push'
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -e
+          TITLE="CI failing on develop"
+          BODY="Develop CI failed: ${RUN_URL} (sha ${SHA})
+
+          This issue auto-closes when develop CI passes again."
+          # Match by title — avoids requiring a ci-failure label to exist.
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+              --search "\"${TITLE}\" in:title" \
+              --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "$REPO" \
+                  --body "Run failed again: ${RUN_URL} (sha ${SHA})"
+          else
+              gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Close tracking issue on develop recovery
+        if: success() && github.ref == 'refs/heads/develop' && github.event_name == 'push'
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -e
+          TITLE="CI failing on develop"
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+              --search "\"${TITLE}\" in:title" \
+              --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+              gh issue close "$EXISTING" --repo "$REPO" \
+                  --comment "Develop CI green again (sha ${SHA})."
+          fi

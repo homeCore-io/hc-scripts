@@ -10,7 +10,7 @@
 #
 # The thirteen Rust plugin repos and hc-plugin-sdk-rs are NOT listed here any
 # more. hc-matter is: it is TypeScript (matter.js), so it stays its own repo for
-# the same reason hc-web and hc-mcp do.
+# the same reason hc-web-flutter and hc-mcp do.
 # They live inside homeCore as workspace members — cloning core gets you all of
 # them, at the revision that actually builds together. The old repos are
 # archived read-only; their releases still serve the registry entries that point
@@ -57,39 +57,21 @@ remote = "git@github.com:homeCore-io/hc-plugin-sdk-dotnet.git"
 
 [[repo]]
 role   = "client"
-name   = "hc-web"
-path   = "clients/hc-web"
-remote = "git@github.com:homeCore-io/hc-web.git"
+name   = "hc-web-flutter"
+path   = "clients/hc-web-flutter"
+remote = "git@github.com:homeCore-io/hc-web-flutter.git"
+
+[[repo]]
+role   = "client"
+name   = "hc-web-lit"
+path   = "clients/hc-web-lit"
+remote = "git@github.com:homeCore-io/hc-web-lit.git"
 
 [[repo]]
 role   = "client"
 name   = "hc-web-leptos"
 path   = "clients/hc-web-leptos"
 remote = "git@github.com:homeCore-io/hc-web-leptos.git"
-
-[[repo]]
-role   = "client"
-name   = "hc-web-admin-react"
-path   = "clients/hc-web-admin-react"
-remote = "git@github.com:homeCore-io/hc-web-admin-react.git"
-
-[[repo]]
-role   = "client"
-name   = "hc-dashboard"
-path   = "clients/hc-dashboard"
-remote = "git@github.com:homeCore-io/hc-dashboard.git"
-
-[[repo]]
-role   = "client"
-name   = "hc-web-svelte"
-path   = "clients/hc-web-svelte"
-remote = "git@github.com:homeCore-io/hc-web-svelte.git"
-
-[[repo]]
-role   = "client"
-name   = "hc-web-dioxus"
-path   = "clients/hc-web-dioxus"
-remote = "git@github.com:homeCore-io/hc-web-dioxus.git"
 
 [[repo]]
 role   = "client"
