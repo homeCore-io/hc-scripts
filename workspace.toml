@@ -63,6 +63,12 @@ remote = "git@github.com:homeCore-io/hc-web-flutter.git"
 
 [[repo]]
 role   = "client"
+name   = "hc-web-lit"
+path   = "clients/hc-web-lit"
+remote = "git@github.com:homeCore-io/hc-web-lit.git"
+
+[[repo]]
+role   = "client"
 name   = "hc-web-leptos"
 path   = "clients/hc-web-leptos"
 remote = "git@github.com:homeCore-io/hc-web-leptos.git"
