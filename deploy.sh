@@ -35,7 +35,7 @@
 #
 # COMPONENTS
 #   homecore      Main HomeCore server
-#   hc-web        Leptos/WASM admin UI (requires trunk)
+#   hc-web-leptos Leptos/WASM admin UI (requires trunk)
 #   hc-yolink     YoLink cloud MQTT bridge
 #   hc-lutron     Lutron RadioRA2 telnet bridge
 #   hc-sonos      Sonos UPnP bridge
@@ -122,7 +122,7 @@ declare -A PLUGIN_SRC_DIR=(
     [hc-roku]="$WORKSPACE_ROOT/plugins/hc-roku"
 )
 
-ALL_COMPONENTS=(homecore hc-web "${PLUGINS[@]}")
+ALL_COMPONENTS=(homecore hc-web-leptos "${PLUGINS[@]}")
 
 # ===========================================================================
 # ARGUMENT PARSING
@@ -176,7 +176,7 @@ check_source() {
     local comp="$1"
     if [[ "$comp" == "homecore" ]]; then
         [[ -f "$HOMECORE_SRC/Cargo.toml" ]]
-    elif [[ "$comp" == "hc-web" ]]; then
+    elif [[ "$comp" == "hc-web-leptos" ]]; then
         [[ -f "$WEBUI_SRC/Trunk.toml" ]]
     else
         local dir="${PLUGIN_SRC_DIR[$comp]:-}"
@@ -270,8 +270,8 @@ build_component() {
     if [[ "$comp" == "homecore" ]]; then
         log "Building homecore ($RELEASE_DIR)"
         cargo build $RELEASE_FLAG --manifest-path "$HOMECORE_SRC/Cargo.toml"
-    elif [[ "$comp" == "hc-web" ]]; then
-        log "Building hc-web (trunk build --release)"
+    elif [[ "$comp" == "hc-web-leptos" ]]; then
+        log "Building hc-web-leptos (trunk build --release)"
         trunk build --release --config "$WEBUI_SRC/Trunk.toml"
     else
         local dir="${PLUGIN_SRC_DIR[$comp]}"
@@ -322,7 +322,7 @@ install_webui() {
     local dst_dist="$DEST/ui/dist"
 
     if [[ ! -d "$src_dist" ]]; then
-        echo "ERROR: hc-web dist not found: $src_dist" >&2
+        echo "ERROR: hc-web-leptos dist not found: $src_dist" >&2
         echo "       Run without --no-build, or run 'trunk build --release' first." >&2
         return 1
     fi
@@ -406,8 +406,8 @@ for comp in "${COMPONENTS[@]}"; do
     if ! check_source "$comp"; then
         if [[ "$comp" == "homecore" ]]; then
             echo "ERROR: homecore source not found at $HOMECORE_SRC" >&2
-        elif [[ "$comp" == "hc-web" ]]; then
-            echo "ERROR: hc-web source not found at $WEBUI_SRC (missing Trunk.toml)" >&2
+        elif [[ "$comp" == "hc-web-leptos" ]]; then
+            echo "ERROR: hc-web-leptos source not found at $WEBUI_SRC (missing Trunk.toml)" >&2
         else
             echo "ERROR: $comp source not found at ${PLUGIN_SRC_DIR[$comp]:-<unknown>}" >&2
         fi
@@ -433,7 +433,7 @@ fi
 for comp in "${COMPONENTS[@]}"; do
     if [[ "$comp" == "homecore" ]]; then
         scaffold_homecore
-    elif [[ "$comp" == "hc-web" ]]; then
+    elif [[ "$comp" == "hc-web-leptos" ]]; then
         # ui/dist/ is created by scaffold_homecore; ensure it exists standalone too
         mkdir -p "$DEST/ui/dist"
     else
@@ -449,7 +449,7 @@ log "Installing binaries"
 for comp in "${COMPONENTS[@]}"; do
     if [[ "$comp" == "homecore" ]]; then
         install_homecore_binary
-    elif [[ "$comp" == "hc-web" ]]; then
+    elif [[ "$comp" == "hc-web-leptos" ]]; then
         install_webui
     else
         install_plugin_binary "$comp"
@@ -464,7 +464,7 @@ if $SYNC_CONFIG; then
     for comp in "${COMPONENTS[@]}"; do
         if [[ "$comp" == "homecore" ]]; then
             sync_homecore_config
-        elif [[ "$comp" == "hc-web" ]]; then
+        elif [[ "$comp" == "hc-web-leptos" ]]; then
             : # no config to sync for web UI
         else
             sync_plugin_config "$comp"

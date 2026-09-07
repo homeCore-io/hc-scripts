@@ -12,7 +12,7 @@
 #   --no-update     Skip 'cargo update' after pull (default: refresh Cargo.lock per component)
 #   --no-build      Skip all cargo builds; use existing binaries as-is
 #   --release       Build and run release binaries (default: debug)
-#   --webui         Also start hc-web's dev proxy, so the Flutter app can reach
+#   --webui         Also start hc-web-flutter's dev proxy, so the Flutter app can reach
 #                   this core same-origin (see the note it prints)
 #   --help          Show this help
 
@@ -28,7 +28,7 @@ BUILD=true
 WEBUI=false
 PROFILE="debug"
 CARGO_FLAG=""
-WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web"
+WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web-flutter"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -209,19 +209,19 @@ if [[ ! -f "$BINARY" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Web UI — hc-web's dev proxy, as a background process
+# Web UI — hc-web-flutter's dev proxy, as a background process
 # ---------------------------------------------------------------------------
 #
 # This used to `trunk serve` hc-web-leptos, the Leptos/WASM admin core once
-# baked in. That client is retired; the web UI is hc-web, which is Flutter and
+# baked in. That client is retired; the web UI is hc-web-flutter, which is Flutter and
 # does not build with cargo.
 #
-# What hc-web needs from us is not a build — Flutter's own dev server does the
+# What hc-web-flutter needs from us is not a build — Flutter's own dev server does the
 # incremental compile — it is a SAME-ORIGIN API. The app calls /api/v1
 # relatively on purpose, and core sends no CORS headers at all, so a browser
 # cannot reach core cross-origin. tool/dev.mjs is 60 lines that serve the app
 # from Flutter's dev server and proxy /api/v1 (WebSockets included) to a real
-# core. In production the nginx in hc-web's image does the same job.
+# core. In production the nginx in hc-web-flutter's image does the same job.
 #
 # `flutter run` stays in the operator's terminal rather than being backgrounded
 # here: hot restart is a keypress on its stdin, and that is the entire point of
@@ -231,7 +231,7 @@ WEBPROXY_PID=""
 
 cleanup() {
     if [[ -n "$WEBPROXY_PID" ]]; then
-        echo "==> Stopping hc-web dev proxy (pid $WEBPROXY_PID)"
+        echo "==> Stopping hc-web-flutter dev proxy (pid $WEBPROXY_PID)"
         kill "$WEBPROXY_PID" 2>/dev/null
         wait "$WEBPROXY_PID" 2>/dev/null
     fi
@@ -245,7 +245,7 @@ if $WEBUI; then
         HC_PORT="$(sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
                     "$HOMECORE_SRC/$CONFIG" | head -1)"
         HC_PORT="${HC_PORT:-8080}"
-        echo "==> Starting hc-web dev proxy (:3001 -> core :$HC_PORT)"
+        echo "==> Starting hc-web-flutter dev proxy (:3001 -> core :$HC_PORT)"
         ( cd "$WEBUI_DIR" && HOMECORE_URL="http://127.0.0.1:$HC_PORT" node tool/dev.mjs ) &
         WEBPROXY_PID=$!
         echo "    pid: $WEBPROXY_PID"
