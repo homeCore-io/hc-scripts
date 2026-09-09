@@ -21,63 +21,62 @@ tracking issue. `hc-web` publishes its own image from its own `release.yml`
 
 ---
 
-## Cutting a release: tag order matters
+## Cutting a release: tag last, after CI is green
 
-**Tag `homeCore-io/docker` and `homeCore-io/hc-web-leptos` *before* tagging
-core or any plugin.**
+**Push the branch, watch the run, tag only when it is green.** Tagging is the
+step that makes a mistake expensive, so it is the one to do last. To prove the
+whole pipeline before committing to a version, run `release.yml` by
+`workflow_dispatch` — it builds and archives without creating a Release.
 
-Get this wrong and the release **fails** — deliberately. The pre-flight steps in
-`rust-release.yml` will tell you exactly which repo is missing which tag.
+**Local green is not CI green.** `rust-ci.yml` pins the toolchain to the version
+the Dockerfiles ship (see *The toolchain is pinned, on purpose*, below) while a
+dev machine tracks a newer stable, and clippy's lint set differs between them.
+Two releases have been tagged off a commit whose CI then failed on exactly that:
+`v0.1.66`, which had to be superseded by `v0.1.67` because its artifacts were
+already published, and `v0.1.68`, which was recoverable only because the release
+run was cancelled before it published anything. A published tag that changes
+underneath somebody is worse than a wasted version number — so if artifacts are
+out, fix forward.
 
-### Why
+### Every release gets notes
 
-Two inputs to `rust-release.yml` are not just orchestration — they are part of
-the **build recipe**, and whatever they point at ends up inside the published
-image:
+An entry in `homeCore-io.github.io/docs/release-notes.md`, written as part of
+cutting it. That page is the operator-facing history and the only place a person
+can read what changed without reading commits. A round containing nothing an
+operator would notice still gets an entry saying so.
 
-- **`webui_ref`** — `hc-web-leptos` has no release workflow of its own. Its WASM
-  bundle is cloned and built *inside core's release*, so this ref decides which
-  UI is baked into `hc-core`.
-- **`docker_repo_ref`** — the `Dockerfile` and entrypoints are fetched from
-  `homeCore-io/docker` at this ref. It decides *how* the image is built.
+### There is no cross-repo tag ordering
 
-Both used to be hardcoded to `develop`. That meant a **tagged** image was built
-from whatever those branches happened to be at that instant — so the image could
-not be rebuilt from its own tag. The UI and the recipe inside a released artifact
-were unrecorded. Rebuilding `v0.1.5` today could quietly produce a different
-image than `v0.1.5` shipped, and nothing anywhere would say so. (This was not
-hypothetical: one UI change landed in an appliance image with two minutes to
-spare, purely by timing.)
+This section used to say that `homeCore-io/docker` and
+`homeCore-io/hc-web-leptos` had to be tagged *before* core or any plugin, and
+that getting it wrong failed the release. **Both halves of that are now
+historical.**
 
-Callers now pin both on a tag push:
+- **The Dockerfile moved in-repo.** A caller that sets `docker_context_dir`
+  stages the recipe from its own repository, so the tag alone reproduces the
+  image and `rust-release.yml` skips the `homeCore-io/docker` pre-flight
+  entirely. Core does this (`docker_context_dir: docker`).
+- **The WASM build is gone.** `rust-release.yml` no longer clones
+  `hc-web-leptos` to bake a UI into `hc-core`; the UI is `hc-web`, with its own
+  image and its own release.
+- **Plugins publish no image at all** — they ship as signed registry artifacts
+  (`publish_registry`), which involves neither repo.
 
-```yaml
-webui_ref:       ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'develop' }}
-docker_repo_ref: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'develop' }}
-```
+The evidence, if this is ever doubted again: neither repo carries a `v0.1.6x`
+tag, and core `v0.1.63`–`v0.1.68` all shipped without one.
 
-The repos are versioned in lockstep — `homeCore-io/docker` and `hc-web-leptos`
-both carry `v0.1.0`–`v0.1.5` — so core `v0.1.6` builds against docker `v0.1.6`
-and bundles UI `v0.1.6`. A tagged image is reproducible from its tag alone.
-
-Failing the release beats falling back to `develop`: an artifact nobody can
-reproduce is worse than a release that stopped and told you why.
-
-### Order
-
-```
-1. Tag homeCore-io/docker        v0.1.6
-2. Tag homeCore-io/hc-web-leptos v0.1.6
-3. Tag homeCore (core) + any plugins being released   v0.1.6
-```
+The legacy path still exists for a caller that leaves `docker_context_dir`
+empty: the Dockerfile and entrypoints are then fetched from `homeCore-io/docker`
+at `docker_repo_ref`, that ref is part of the build recipe, and the pre-flight
+fails the release by name if the tag is missing — which is still better than
+silently falling back to `develop` and publishing an artifact nobody can
+reproduce. **No caller in this workspace is that caller:** `hc-tui` publishes no
+image, and `hc-web-flutter` ships its own `Dockerfile` from its own repo.
 
 ### This does NOT apply to `develop`
 
-Pushing to `develop` still resolves both refs to `develop`, which is the whole
-point of a dev image — it tracks the branch. **Ordinary day-to-day pushes need no
-ceremony.** The ordering only binds when you push a `v*` tag.
-
----
+Ordinary day-to-day pushes need no ceremony. Everything above is about pushing
+a `v*` tag.
 
 ## CI: the `permissions` block is not optional
 
@@ -128,8 +127,10 @@ Two wrinkles specific to Flutter:
   `cargo fmt --check`.
 
 `hc-web`'s Dockerfile used to build from `:stable`, which meant a tagged image
-could not be rebuilt from its own tag — the same reproducibility hole `webui_ref`
-and `docker_repo_ref` had, and fixed the same way.
+could not be rebuilt from its own tag — the same reproducibility hole the old
+`webui_ref` and `docker_repo_ref` had, and fixed the same way. (`webui_ref` no
+longer exists; core's recipe now lives in core. See *There is no cross-repo tag
+ordering*, above.)
 
 Each repo has a weekly `canary.yml` that runs the same checks against latest
 stable, on `develop`, and gates nothing. A red canary means *stable moved*, not
