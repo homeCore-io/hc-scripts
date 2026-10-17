@@ -57,6 +57,12 @@ remote = "git@github.com:homeCore-io/hc-plugin-sdk-dotnet.git"
 
 [[repo]]
 role   = "client"
+name   = "hc-web-svelte"
+path   = "clients/hc-web-svelte"
+remote = "git@github.com:homeCore-io/hc-web-svelte.git"
+
+[[repo]]
+role   = "client"
 name   = "hc-web-flutter"
 path   = "clients/hc-web-flutter"
 remote = "git@github.com:homeCore-io/hc-web-flutter.git"
