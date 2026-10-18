@@ -32,9 +32,9 @@ on:
         description: 'Rust toolchain to use (matches rustup channel/version).
           Pinned default — bump deliberately rather than tracking "stable".
           Aligned with hc-scripts/rust-release.yml + Dockerfile pins as of
-          BPF-2.2 (2026-05-04).'
+          BPF-2.2 (2026-05-04); 1.95 → 1.99 on 2026-10-18.'
         required: false
-        default: "1.95"
+        default: "1.99"
         type: string
       run_clippy:
         description: 'Run clippy with -D warnings.'
@@ -87,16 +87,16 @@ jobs:
 
       - name: cargo clippy
         if: ${{ inputs.run_clippy }}
-        # Two lints intentionally allowed at CI scope — see release_0_1_0
-        # plan. They are stylistic rather than bug-catching for our codebase
-        # and the fixes don't materially improve readability:
+        # One lint intentionally allowed at CI scope — see release_0_1_0
+        # plan. It is stylistic rather than bug-catching for our codebase and
+        # the fix doesn't materially improve readability:
         #   type_complexity     — concrete types like Arc<DashMap<…>> we want
         #                         visible at the field rather than hidden behind
         #                         an alias
-        #   result_large_err    — Result<T, axum::Response> from API handlers;
-        #                         boxing changes the calling convention
-        # Re-enable each as we get to it; do NOT add new entries here without
-        # discussing the trade-off.
+        # Do NOT add new entries here without discussing the trade-off.
+        #
+        # result_large_err was dropped 2026-10-18: core boxed its last five
+        # (Result<T, Box<Response>>) and hc-tui had none.
         #
         # too_many_arguments was dropped 2026-07-30 once every repo calling this
         # workflow was clean: the plugins and hc-tui already were, core's last
@@ -106,8 +106,7 @@ jobs:
         run: |
           cargo clippy --all-targets --all-features -- \
             -D warnings \
-            -A clippy::type_complexity \
-            -A clippy::result_large_err
+            -A clippy::type_complexity
 
       - name: cargo test
         if: ${{ inputs.run_tests }}

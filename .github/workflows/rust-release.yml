@@ -113,9 +113,10 @@ on:
         description: 'Rust toolchain version. Pinned default — bump
           deliberately rather than tracking "stable" so a new Rust major
           doesn''t silently change CI behavior. Was "stable" pre-2026-05-04
-          when alpine + Rust pinning landed (BPF-2.2).'
+          when alpine + Rust pinning landed (BPF-2.2); 1.95 → 1.99 on
+          2026-10-18.'
         required: false
-        default: "1.95"
+        default: "1.99"
         type: string
       # ─── Docker image publishing (opt-in) ────────────────────────────────
       publish_docker_image:
