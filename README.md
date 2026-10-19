@@ -60,7 +60,11 @@ historical.**
   `hc-web-leptos` to bake a UI into `hc-core`; the UI is `hc-web`, with its own
   image and its own release.
 - **Plugins publish no image at all** — they ship as signed registry artifacts
-  (`publish_registry`), which involves neither repo.
+  (`publish_registry`), which involves neither repo. A plugin that carries its
+  own screens (`<source_dir>/ui/package.json`) has them built (`npm ci && npm
+  run build`, which must write `dist/manifest.json`) and packed into the same
+  artifact as `ui/`, beside the program, with `ui = "ui"` in its `plugin.toml`;
+  core installs the folder beside the binary and the plugin serves it.
 
 The evidence, if this is ever doubted again: neither repo carries a `v0.1.6x`
 tag, and core `v0.1.63`–`v0.1.68` all shipped without one.

@@ -770,6 +770,15 @@ jobs:
         with:
           path: artifacts
 
+      # A plugin that carries its own screens (`<source_dir>/ui/package.json`)
+      # has them built here and packed beside its program as `ui/` — the
+      # plugin serves them itself, so the package is the only place they go.
+      - name: Set up Node for the plugin's UI
+        if: hashFiles(format('{0}/ui/package.json', inputs.source_dir)) != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Package tar.zst and attach to release
         id: pkg
         env:
@@ -808,13 +817,24 @@ jobs:
           binpath="$(find "$work" -type f -name "$BIN" -print -quit)"
           [ -n "$binpath" ] || { echo "::error::binary $BIN not in $GZ"; exit 1; }
 
-          # Assemble plugin.<id>-<ver>-<platform>.tar.zst = plugin.toml + binary.
+          # Assemble plugin.<id>-<ver>-<platform>.tar.zst = plugin.toml + binary
+          # (+ ui/, the plugin's own screens, when it carries them).
           stage="$(mktemp -d)"
           install -m755 "$binpath" "$stage/$BIN"
           printf 'id = "%s"\nname = "%s"\nversion = "%s"\nbinary = "%s"\n' \
             "$ID" "$NAME" "$VER" "$BIN" > "$stage/plugin.toml"
+          CONTENTS=(plugin.toml "$BIN")
+          UI_SRC="${{ inputs.source_dir }}/ui"
+          if [ -f "$UI_SRC/package.json" ]; then
+            ( cd "$UI_SRC" && npm ci --no-audit --no-fund && npm run build )
+            [ -f "$UI_SRC/dist/manifest.json" ] || { echo "::error::$UI_SRC built no dist/manifest.json — the plugin would declare no UI"; exit 1; }
+            cp -R "$UI_SRC/dist" "$stage/ui"
+            echo 'ui = "ui"' >> "$stage/plugin.toml"
+            CONTENTS+=(ui)
+            echo "Packed the plugin's UI: $(find "$stage/ui" -type f | wc -l) files, $(du -sh "$stage/ui" | cut -f1)"
+          fi
           ART="${ID}-${VER}-${PLATFORM}.tar.zst"
-          tar --zstd -cf "$ART" -C "$stage" plugin.toml "$BIN"
+          tar --zstd -cf "$ART" -C "$stage" "${CONTENTS[@]}"
           SHA="$(sha256sum "$ART" | cut -d' ' -f1)"
           SIZE="$(stat -c%s "$ART")"
 
