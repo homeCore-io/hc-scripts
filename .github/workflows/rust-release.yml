@@ -792,7 +792,14 @@ jobs:
           BIN="${{ inputs.binary_name }}"         # hc-wled
           BARE="${BIN#hc-}"                       # wled
           ID="plugin.${BARE}"
-          NAME="$(echo "$BARE" | sed 's/.*/\u&/')"   # Wled (cosmetic; UI humanizes the id)
+          # The plugin's own spelling ("YoLink", "Z-Wave", "WLED") from
+          # [package.metadata.homecore] name in its Cargo.toml; else the id
+          # capitalised ("Wled"), which is what every entry carried before.
+          NAME=""
+          if [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ]; then
+            NAME="$(python3 -c 'import tomllib,sys;print(tomllib.load(open(sys.argv[1],"rb")).get("package",{}).get("metadata",{}).get("homecore",{}).get("name",""))' "$MANIFEST")"
+          fi
+          [ -n "$NAME" ] || NAME="$(echo "$BARE" | sed 's/.*/\u&/')"
           OS="linux"; ARCH="x86_64"; PLATFORM="${OS}-${ARCH}"
 
           # `package.description` from the plugin's own manifest becomes the
