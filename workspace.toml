@@ -69,7 +69,7 @@ remote = "git@github.com:homeCore-io/hc-web-flutter.git"
 
 [[repo]]
 role   = "client"
-name   = "hc-web-lit"
+name   = "hc-web-lit"     # retired 2026-10-29; repo kept, not archived
 path   = "clients/hc-web-lit"
 remote = "git@github.com:homeCore-io/hc-web-lit.git"
 
