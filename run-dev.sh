@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# run-dev.sh — Build all HomeCore components (debug) then start the server.
+# run-dev.sh — Build homecore and every Rust plugin (debug), then start the server.
 #
-# Discovers every plugin under plugins/ that contains a Cargo.toml and builds
-# it, then builds homecore, then runs the server.
+# core/ is one cargo workspace holding the server and every Rust plugin
+# (core/plugins/hc-*), so everything builds there, into core/target/, which
+# is where config/homecore.dev.toml points each plugin's binary.
+#
+# NOT sandboxed: homecore.dev.toml runs the real plugin configs against the
+# real hubs and cloud accounts. Use a sandbox for anything destructive.
 #
 # Usage:
 #   ./run-dev.sh [OPTIONS]
 #
 # Options:
 #   --no-pull       Skip git pull in all repos (default: pull before building)
-#   --no-update     Skip 'cargo update' after pull (default: refresh Cargo.lock per component)
+#   --no-update     Skip 'cargo update' after pull (default: refresh core's Cargo.lock)
 #   --no-build      Skip all cargo builds; use existing binaries as-is
 #   --release       Build and run release binaries (default: debug)
-#   --webui         Also start hc-web-flutter's dev proxy, so the Flutter app can reach
-#                   this core same-origin (see the note it prints)
+#   --webui         Also start the web app's dev server (clients/hc-web-svelte,
+#                   `npm run dev` on :5180), pointed at this core
 #   --help          Show this help
 
 set -uo pipefail
@@ -28,7 +32,7 @@ BUILD=true
 WEBUI=false
 PROFILE="debug"
 CARGO_FLAG=""
-WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web-flutter"
+WEBUI_DIR="$WORKSPACE_ROOT/clients/hc-web-svelte"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,10 +59,17 @@ for dir in "$WORKSPACE_ROOT"/sdks/hc-plugin-sdk-*/; do
     [[ -d "$dir" ]] && SDK_DIRS+=("$dir")
 done
 
-# Plugin repos with a Cargo.toml
+# Plugins that are their own repos (not Rust, so not in core's workspace):
+# pulled, not built here.
 PLUGIN_DIRS=()
 for dir in "$WORKSPACE_ROOT"/plugins/hc-*/; do
-    [[ -f "${dir}Cargo.toml" ]] && PLUGIN_DIRS+=("$dir")
+    [[ -d "${dir}.git" ]] && PLUGIN_DIRS+=("$dir")
+done
+
+# The Rust plugins, as members of core's workspace.
+CORE_PLUGINS=()
+for dir in "$HOMECORE_SRC"/plugins/hc-*/; do
+    [[ -f "${dir}Cargo.toml" ]] && CORE_PLUGINS+=("$(basename "$dir")")
 done
 
 # Client repos (pulled but not built here)
@@ -105,31 +116,19 @@ if $PULL; then
 fi
 
 # ---------------------------------------------------------------------------
-# Refresh phase — bump each workspace's Cargo.lock to the latest
-# semver-compatible deps. With the meta-layout per-category workspaces
-# (plugins/, clients/, sdks/) there are now four lockfiles, not one
-# per component. core/ is its own internal workspace.
+# Refresh phase — bump core's Cargo.lock to the latest semver-compatible
+# deps. This changes a committed file; --no-update skips it.
 #
 # Skipped if --no-update or --no-pull (no point if source didn't move).
 # ---------------------------------------------------------------------------
 
 if $PULL && $UPDATE; then
-    UPDATE_DIRS=("$HOMECORE_SRC")
-    for sub in plugins clients sdks; do
-        [[ -f "$WORKSPACE_ROOT/$sub/Cargo.toml" ]] && UPDATE_DIRS+=("$WORKSPACE_ROOT/$sub/")
-    done
-
-    echo "==> cargo update across ${#UPDATE_DIRS[@]} workspaces"
-    echo
-    for dir in "${UPDATE_DIRS[@]}"; do
-        name="$(basename "${dir%/}")"
-        printf "    %-25s  " "$name"
-        if cargo update --quiet --manifest-path "${dir}Cargo.toml" 2>/dev/null; then
-            echo "ok"
-        else
-            echo "WARN: cargo update failed (offline or registry blip?)" >&2
-        fi
-    done
+    printf "==> cargo update in core  "
+    if cargo update --quiet --manifest-path "$HOMECORE_SRC/Cargo.toml" 2>/dev/null; then
+        echo "ok"
+    else
+        echo "WARN: cargo update failed (offline or registry blip?)" >&2
+    fi
     echo
 fi
 
@@ -138,46 +137,14 @@ fi
 # ---------------------------------------------------------------------------
 
 if $BUILD; then
-    PLUGINS_WS="$WORKSPACE_ROOT/plugins/Cargo.toml"
-    USE_PLUGIN_WS=false
-    [[ -f "$PLUGINS_WS" ]] && USE_PLUGIN_WS=true
-    TOTAL=$(( ${#PLUGIN_DIRS[@]} + 1 ))   # plugins + homecore
+    TOTAL=$(( ${#CORE_PLUGINS[@]} + 1 ))   # plugins + homecore
     FAILED=()
-    STEP=0
 
-    echo "==> Building $TOTAL Rust crates ($PROFILE)"
-    if $USE_PLUGIN_WS; then
-        echo "    (plugins via meta-layout workspace at $PLUGINS_WS)"
-    fi
+    echo "==> Building $TOTAL Rust crates in core's workspace ($PROFILE)"
     echo
 
-    # Build each hc-* plugin. With the meta-layout workspace at
-    # plugins/, we route every plugin build through a single workspace
-    # manifest so they share one Cargo.lock and the per-repo Cargo.lock
-    # files stay quiescent. Per-package failure still only warns —
-    # homecore can start with a stale binary for that plugin.
-    for dir in "${PLUGIN_DIRS[@]}"; do
-        name="$(basename "$dir")"
-        STEP=$(( STEP + 1 ))
-        echo "[$STEP/$TOTAL] $name"
-
-        if $USE_PLUGIN_WS; then
-            BUILD_CMD=(cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "$PLUGINS_WS" -p "$name")
-        else
-            BUILD_CMD=(cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "${dir}Cargo.toml")
-        fi
-        if "${BUILD_CMD[@]}" 2>&1; then
-            echo "  ok"
-        else
-            echo "  WARN: $name build failed — stale binary will be used" >&2
-            FAILED+=("$name")
-        fi
-        echo
-    done
-
-    # Build homecore last.  Failure here is fatal — nothing to start.
-    STEP=$(( STEP + 1 ))
-    echo "[$STEP/$TOTAL] homecore"
+    # homecore first. Failure here is fatal: there is nothing to start.
+    echo "[1/$TOTAL] homecore"
     if ! cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "$HOMECORE_SRC/Cargo.toml" --bin homecore 2>&1; then
         echo
         echo "ERROR: homecore build failed — cannot start." >&2
@@ -185,6 +152,21 @@ if $BUILD; then
     fi
     echo "  ok"
     echo
+
+    # Each plugin on its own, so one that fails only warns: homecore can
+    # start with that plugin's previous binary.
+    STEP=1
+    for name in "${CORE_PLUGINS[@]}"; do
+        STEP=$(( STEP + 1 ))
+        echo "[$STEP/$TOTAL] $name"
+        if cargo build ${CARGO_FLAG:+"$CARGO_FLAG"} --manifest-path "$HOMECORE_SRC/Cargo.toml" -p "$name" 2>&1; then
+            echo "  ok"
+        else
+            echo "  WARN: $name build failed — stale binary will be used" >&2
+            FAILED+=("$name")
+        fi
+        echo
+    done
 
     # Summary
     if [[ ${#FAILED[@]} -eq 0 ]]; then
@@ -209,50 +191,38 @@ if [[ ! -f "$BINARY" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Web UI — hc-web-flutter's dev proxy, as a background process
+# Web UI — the app's dev server, as a background process
 # ---------------------------------------------------------------------------
 #
-# This used to `trunk serve` hc-web-leptos, the Leptos/WASM admin core once
-# baked in. That client is retired; the web UI is hc-web-flutter, which is Flutter and
-# does not build with cargo.
-#
-# What hc-web-flutter needs from us is not a build — Flutter's own dev server does the
-# incremental compile — it is a SAME-ORIGIN API. The app calls /api/v1
-# relatively on purpose, and core sends no CORS headers at all, so a browser
-# cannot reach core cross-origin. tool/dev.mjs is 60 lines that serve the app
-# from Flutter's dev server and proxy /api/v1 (WebSockets included) to a real
-# core. In production the nginx in hc-web-flutter's image does the same job.
-#
-# `flutter run` stays in the operator's terminal rather than being backgrounded
-# here: hot restart is a keypress on its stdin, and that is the entire point of
-# running it this way.
+# The app (clients/hc-web-svelte) calls /api/v1 relatively, and core sends no
+# CORS headers, so its own server passes the API through to core same-origin.
+# `npm run dev` runs that server with Vite's hot reload, on :5180, and
+# HC_CORE_URL tells it where this core is.
 
-WEBPROXY_PID=""
+WEBUI_PID=""
 
 cleanup() {
-    if [[ -n "$WEBPROXY_PID" ]]; then
-        echo "==> Stopping hc-web-flutter dev proxy (pid $WEBPROXY_PID)"
-        kill "$WEBPROXY_PID" 2>/dev/null
-        wait "$WEBPROXY_PID" 2>/dev/null
+    if [[ -n "$WEBUI_PID" ]]; then
+        echo "==> Stopping the web app's dev server (pid $WEBUI_PID)"
+        kill "$WEBUI_PID" 2>/dev/null
+        wait "$WEBUI_PID" 2>/dev/null
     fi
 }
 trap cleanup EXIT INT TERM
 
 if $WEBUI; then
-    if [[ ! -f "$WEBUI_DIR/tool/dev.mjs" ]]; then
-        echo "WARN: $WEBUI_DIR/tool/dev.mjs not found — skipping --webui" >&2
+    if [[ ! -f "$WEBUI_DIR/package.json" ]]; then
+        echo "WARN: $WEBUI_DIR not found — skipping --webui" >&2
     else
         HC_PORT="$(sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
                     "$HOMECORE_SRC/$CONFIG" | head -1)"
         HC_PORT="${HC_PORT:-8080}"
-        echo "==> Starting hc-web-flutter dev proxy (:3001 -> core :$HC_PORT)"
-        ( cd "$WEBUI_DIR" && HOMECORE_URL="http://127.0.0.1:$HC_PORT" node tool/dev.mjs ) &
-        WEBPROXY_PID=$!
-        echo "    pid: $WEBPROXY_PID"
-        echo
-        echo "    Now run this in another terminal, and press R to hot-restart:"
-        echo "      cd $WEBUI_DIR && flutter run -d web-server --web-port 5001 --web-hostname 127.0.0.1"
-        echo "    Then open http://localhost:3001"
+        [[ -d "$WEBUI_DIR/node_modules" ]] || ( cd "$WEBUI_DIR" && npm install )
+        echo "==> Starting the web app's dev server (:5180 -> core :$HC_PORT)"
+        ( cd "$WEBUI_DIR" && HC_CORE_URL="http://127.0.0.1:$HC_PORT" npm run dev ) &
+        WEBUI_PID=$!
+        echo "    pid: $WEBUI_PID"
+        echo "    Open http://localhost:5180"
         echo
     fi
 fi
