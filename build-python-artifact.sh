@@ -137,6 +137,7 @@ print(project["version"])
 print(project.get("description", ""))
 print(hc["id"])
 print(hc["entrypoint"])
+print(hc.get("category", ""))
 PY
 }
 
@@ -148,6 +149,8 @@ VERSION="${META[1]}"
 DESCRIPTION="${META[2]}"
 PLUGIN_ID="${META[3]}"
 ENTRYPOINT="${META[4]}"
+# Where the web app's Catalog groups it; optional.
+CATEGORY="${META[5]:-}"
 
 if [[ -z "$SDK_VERSION" ]]; then
   SDK_VERSION="$("$PYTHON" - "$SDK_DIR/pyproject.toml" <<'PY'
@@ -309,6 +312,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "version=$VERSION"
     echo "abi=$ABI"
     echo "description=$DESCRIPTION"
+    echo "category=$CATEGORY"
   } >> "$GITHUB_OUTPUT"
 fi
 

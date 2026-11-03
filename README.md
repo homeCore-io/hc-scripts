@@ -10,14 +10,16 @@ Work on `develop`, then PR to `main`.
 |---|---|
 | `.github/workflows/rust-ci.yml` | every Rust repo's `ci.yml` — fmt, clippy, test |
 | `.github/workflows/rust-release.yml` | every Rust repo's `release.yml` — build, Docker publish, appliance dispatch |
-| `.github/workflows/flutter-ci.yml` | `hc-web`'s `ci.yml` — analyze, format, test, build web |
+| `.github/workflows/node-ci.yml` | `hc-web-svelte`'s `ci.yml` and `release.yml` (typecheck, lint, format, test, build) |
+| `.github/workflows/python-release.yml` | Python plugins' `release.yml`: a hermetic artifact a plugin runtime installs offline (none released yet) |
+| `.github/workflows/flutter-ci.yml` | the retired Flutter app (`hc-web-flutter`), kept for its repo's history |
 | `.github/workflows/cleanup-containers.yml` | GHCR retention |
 
-`flutter-ci.yml` is the Dart counterpart of `rust-ci.yml` and follows the same
-rules below — the pinned toolchain, the `permissions` block, the develop-red
-tracking issue. `hc-web` publishes its own image from its own `release.yml`
-(its `Dockerfile` lives in the repo, not in `homeCore-io/docker`), so there is no
-`flutter-release.yml`.
+`node-ci.yml` is the TypeScript counterpart of `rust-ci.yml` and follows the
+same rules below: the pinned toolchain, the `permissions` block, the
+develop-red tracking issue. The web app publishes its own image from its own
+`release.yml` (its `Dockerfile` lives in its repo, not in `homeCore-io/docker`),
+so there is no `node-release.yml`.
 
 ---
 
@@ -57,8 +59,8 @@ historical.**
   image and `rust-release.yml` skips the `homeCore-io/docker` pre-flight
   entirely. Core does this (`docker_context_dir: docker`).
 - **The WASM build is gone.** `rust-release.yml` no longer clones
-  `hc-web-leptos` to bake a UI into `hc-core`; the UI is `hc-web`, with its own
-  image and its own release.
+  `hc-web-leptos` to bake a UI into `hc-core`; the UI is `hc-web-svelte`, with
+  its own image and its own release.
 - **Plugins publish no image at all** — they ship as signed registry artifacts
   (`publish_registry`), which involves neither repo. A plugin that carries its
   own screens (`<source_dir>/ui/package.json`) has them built (`npm ci && npm
@@ -75,7 +77,7 @@ at `docker_repo_ref`, that ref is part of the build recipe, and the pre-flight
 fails the release by name if the tag is missing — which is still better than
 silently falling back to `develop` and publishing an artifact nobody can
 reproduce. **No caller in this workspace is that caller:** `hc-tui` publishes no
-image, and `hc-web-flutter` ships its own `Dockerfile` from its own repo.
+image, and `hc-web-svelte` ships its own `Dockerfile` from its own repo.
 
 ### This does NOT apply to `develop`
 
@@ -100,7 +102,7 @@ was dead org-wide for weeks this way before anyone noticed, because `release.yml
 had its own `permissions` block and kept working, which made it look like a code
 problem.
 
-This binds on **every** caller, not just `ci.yml`. `hc-web`'s `release.yml` runs
+This binds on **every** caller, not just `ci.yml`. `hc-web-svelte`'s `release.yml` runs
 CI as a gate before it publishes an image, so it must grant `issues: write`
 alongside its `packages: write` — declare it at the workflow level, where it is
 hard to miss, rather than on the calling job.
@@ -113,11 +115,13 @@ ships**. Do not pass `rust_version: "stable"` from a caller — that gates merge
 on a compiler you never ship with, and turns CI red on Rust release day with no
 code change.
 
-`flutter-ci.yml` pins `flutter_version` for the same reason. Keep it equal to
-`ARG FLUTTER_VERSION` in `hc-web`'s Dockerfile — bump the two together, or CI is
-no longer testing what ships.
+`node-ci.yml` pins `node_version` (24) for the same reason. Keep it equal to the
+`node:24-alpine` the web app's Dockerfile builds from, and bump the two
+together, or CI is no longer testing what ships.
 
-Two wrinkles specific to Flutter:
+The rest of this section is about the retired Flutter app (`hc-web-flutter`),
+kept because its repo still exists. `flutter-ci.yml` pinned `flutter_version`
+to `ARG FLUTTER_VERSION` in that app's Dockerfile, with two wrinkles:
 
 - **The Dockerfile fetches the SDK tarball directly**, rather than building from
   `ghcr.io/cirruslabs/flutter`. That image bundles the Android SDK and NDK — about
@@ -130,7 +134,7 @@ Two wrinkles specific to Flutter:
   also runs `dart format --set-exit-if-changed`, the counterpart of
   `cargo fmt --check`.
 
-`hc-web`'s Dockerfile used to build from `:stable`, which meant a tagged image
+The Flutter app's Dockerfile used to build from `:stable`, which meant a tagged image
 could not be rebuilt from its own tag — the same reproducibility hole the old
 `webui_ref` and `docker_repo_ref` had, and fixed the same way. (`webui_ref` no
 longer exists; core's recipe now lives in core. See *There is no cross-repo tag
@@ -139,5 +143,5 @@ ordering*, above.)
 Each repo has a weekly `canary.yml` that runs the same checks against latest
 stable, on `develop`, and gates nothing. A red canary means *stable moved*, not
 *develop is broken* — read it as a preview of what the next pin bump will demand.
-(hc-web arrived with a deprecation from 3.41 that nothing had ever reported. That
+(The Flutter app arrived with a deprecation from 3.41 that nothing had ever reported. That
 is exactly the bill a canary stops you paying all at once.)
