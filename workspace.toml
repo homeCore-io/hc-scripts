@@ -7,6 +7,7 @@
 #   plugin  — a plugin that is NOT Rust, so not a member of that workspace
 #   sdk     — plugin SDKs for other languages (Python, Node.js, .NET)
 #   client  — UI and API consumers (web, TUI, MCP)
+#   extension — UI extensions for the web app
 #
 # The thirteen Rust plugin repos and hc-plugin-sdk-rs are NOT listed here any
 # more. hc-matter is: it is TypeScript (matter.js), so it stays its own repo for
@@ -54,6 +55,14 @@ role   = "sdk"
 name   = "hc-plugin-sdk-dotnet"
 path   = "sdks/hc-plugin-sdk-dotnet"
 remote = "git@github.com:homeCore-io/hc-plugin-sdk-dotnet.git"
+
+# The UI extensions homeCore makes, one directory each (drawings and cards
+# the web app's looks can choose). Not on GitHub yet.
+[[repo]]
+role   = "extension"
+name   = "hc-extensions"
+path   = "extensions"
+remote = "git@github.com:homeCore-io/hc-extensions.git"
 
 [[repo]]
 role   = "client"
