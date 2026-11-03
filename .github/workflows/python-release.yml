@@ -114,6 +114,7 @@ jobs:
       version: ${{ steps.build.outputs.version }}
       abi: ${{ steps.build.outputs.abi }}
       description: ${{ steps.build.outputs.description }}
+      category: ${{ steps.build.outputs.category }}
     steps:
       - uses: actions/checkout@v7
 
@@ -238,6 +239,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           ABI: ${{ needs.build.outputs.abi }}
           DESCRIPTION: ${{ needs.build.outputs.description }}
+          CATEGORY: ${{ needs.build.outputs.category }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -259,7 +261,8 @@ jobs:
               -F "client_payload[size]=${size}" \
               -F "client_payload[runtime]=python" \
               -F "client_payload[abi]=${ABI}" \
-              -F "client_payload[description]=${DESCRIPTION}"
+              -F "client_payload[description]=${DESCRIPTION}" \
+              -F "client_payload[category]=${CATEGORY}"
             echo "Notified ${{ inputs.registry_repo }}: ${PLUGIN_ID} ${VERSION} ${arch}"
           done
 

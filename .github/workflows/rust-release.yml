@@ -811,6 +811,12 @@ jobs:
           if [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ]; then
             DESC="$(python3 -c 'import tomllib,sys;print(tomllib.load(open(sys.argv[1],"rb")).get("package",{}).get("description",""))' "$MANIFEST")"
           fi
+          # `[package.metadata.homecore] category` is where the web app's Catalog
+          # groups it (Lighting, Climate, …). Optional: blank keeps the indexed one.
+          CATEGORY=""
+          if [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ]; then
+            CATEGORY="$(python3 -c 'import tomllib,sys;print(tomllib.load(open(sys.argv[1],"rb")).get("package",{}).get("metadata",{}).get("homecore",{}).get("category",""))' "$MANIFEST")"
+          fi
           [ -n "$DESC" ] || echo "::warning::no package.description in ${MANIFEST:-<unset>}; this plugin will show as a bare name in the registry catalog"
 
           # Pull the binary out of the release .tar.gz (homecore/plugins/<name>/<bin>).
@@ -850,6 +856,7 @@ jobs:
           {
             echo "id=$ID"; echo "name=$NAME"; echo "version=$VER"
             echo "os=$OS"; echo "arch=$ARCH"; echo "sha256=$SHA"; echo "size=$SIZE"
+            echo "category=$CATEGORY"
             echo "url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ART}"
             # Heredoc form: a description is free text and may contain anything
             # except the delimiter, which `key=value` cannot survive.
@@ -897,7 +904,8 @@ jobs:
             -F "client_payload[url]=${{ steps.pkg.outputs.url }}" \
             -F "client_payload[sha256]=${{ steps.pkg.outputs.sha256 }}" \
             -F "client_payload[size]=${{ steps.pkg.outputs.size }}" \
-            -F "client_payload[description]=${DESC}"
+            -F "client_payload[description]=${DESC}" \
+            -F "client_payload[category]=${{ steps.pkg.outputs.category }}"
           echo "Notified ${{ inputs.registry_repo }}: ${{ steps.pkg.outputs.id }} ${{ steps.pkg.outputs.version }}"
 
       # Phase 6: make a release prove it published.
