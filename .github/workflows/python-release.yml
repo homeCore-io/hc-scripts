@@ -111,6 +111,7 @@ jobs:
         arch: ${{ fromJson(inputs.arches) }}
     outputs:
       plugin_id: ${{ steps.build.outputs.plugin_id }}
+      name: ${{ steps.build.outputs.name }}
       version: ${{ steps.build.outputs.version }}
       abi: ${{ steps.build.outputs.abi }}
       description: ${{ steps.build.outputs.description }}
@@ -236,6 +237,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.REGISTRY_DISPATCH_PAT }}
           PLUGIN_ID: ${{ needs.build.outputs.plugin_id }}
+          NAME: ${{ needs.build.outputs.name }}
           VERSION: ${{ needs.build.outputs.version }}
           ABI: ${{ needs.build.outputs.abi }}
           DESCRIPTION: ${{ needs.build.outputs.description }}
@@ -249,20 +251,23 @@ jobs:
           for m in incoming/*.meta; do
             . "$m"
             url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/${PLUGIN_ID}-${VERSION}-python-${ABI}-${arch}.tar.zst"
+            # GitHub refuses a dispatch with more than 10 top-level payload
+            # fields, so the artifact and the Catalog text go nested; the
+            # registry reads either shape.
             gh api "repos/${{ inputs.registry_repo }}/dispatches" \
               -f event_type=publish-plugin \
               -F "client_payload[id]=${PLUGIN_ID}" \
-              -F "client_payload[name]=${PLUGIN_ID}" \
+              -F "client_payload[name]=${NAME:-$PLUGIN_ID}" \
               -F "client_payload[version]=${VERSION}" \
-              -F "client_payload[os]=linux" \
-              -F "client_payload[arch]=${arch}" \
-              -F "client_payload[url]=${url}" \
-              -F "client_payload[sha256]=${sha256}" \
-              -F "client_payload[size]=${size}" \
               -F "client_payload[runtime]=python" \
               -F "client_payload[abi]=${ABI}" \
-              -F "client_payload[description]=${DESCRIPTION}" \
-              -F "client_payload[category]=${CATEGORY}"
+              -F "client_payload[artifact][os]=linux" \
+              -F "client_payload[artifact][arch]=${arch}" \
+              -F "client_payload[artifact][url]=${url}" \
+              -F "client_payload[artifact][sha256]=${sha256}" \
+              -F "client_payload[artifact][size]=${size}" \
+              -F "client_payload[about][description]=${DESCRIPTION}" \
+              -F "client_payload[about][category]=${CATEGORY}"
             echo "Notified ${{ inputs.registry_repo }}: ${PLUGIN_ID} ${VERSION} ${arch}"
           done
 

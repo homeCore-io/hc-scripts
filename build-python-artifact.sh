@@ -146,6 +146,8 @@ print(project.get("description", ""))
 print(hc["id"])
 print(hc["entrypoint"])
 print(hc.get("category", ""))
+# The Catalog's display name; the id when not given.
+print(hc.get("name", ""))
 PY
 }
 
@@ -159,6 +161,8 @@ PLUGIN_ID="${META[3]}"
 ENTRYPOINT="${META[4]}"
 # Where the web app's Catalog groups it; optional.
 CATEGORY="${META[5]:-}"
+DISPLAY_NAME="${META[6]:-}"
+DISPLAY_NAME="${DISPLAY_NAME:-$PLUGIN_ID}"
 
 if [[ -z "$SDK_VERSION" ]]; then
   SDK_VERSION="$("$PYTHON" - "$SDK_DIR/pyproject.toml" <<'PY'
@@ -317,6 +321,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "sha256=$SHA"
     echo "size=$SIZE"
     echo "plugin_id=$PLUGIN_ID"
+    echo "name=$DISPLAY_NAME"
     echo "version=$VERSION"
     echo "abi=$ABI"
     echo "description=$DESCRIPTION"
