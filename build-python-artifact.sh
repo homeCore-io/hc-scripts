@@ -129,6 +129,14 @@ if missing:
 for key in ("id", "entrypoint"):
     if not hc.get(key):
         sys.exit(f"pyproject [tool.homecore] is missing `{key}`")
+# The SDK wheel is in every wheelhouse, but the runtime installs only the plugin
+# and what it declares. A plugin that imports the SDK without declaring it builds
+# clean, installs clean, and dies at its first import inside the runtime.
+import re
+deps = [re.split(r"[<>=!~\[; ]", d.strip(), 1)[0] for d in project.get("dependencies", [])]
+if "homecore-plugin-sdk" not in {re.sub(r"[-_.]+", "-", d).lower() for d in deps}:
+    sys.exit('pyproject [project] dependencies must include "homecore-plugin-sdk"; '
+             "the runtime installs only what the plugin declares")
 runtime = hc.get("runtime", "python")
 if runtime != "python":
     sys.exit(f"[tool.homecore] runtime is `{runtime}`, and this script builds python")
