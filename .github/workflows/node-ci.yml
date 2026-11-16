@@ -127,6 +127,17 @@ jobs:
         if: ${{ inputs.run_build }}
         run: npm run build
 
+      # A repo's own size budget, when it has one. Otherwise it first runs in
+      # the release image build, after the tag is already pushed.
+      - name: budget
+        if: ${{ inputs.run_build }}
+        run: |
+          if node -e 'process.exit(require("./package.json").scripts?.budget ? 0 : 1)'; then
+            npm run budget
+          else
+            echo "No budget script; nothing to check."
+          fi
+
       # ── Develop CI is otherwise unwatched (no branch protection, no
       # required-checks gate), so red status can rot for days. Open a single
       # tracking issue per repo when develop fails and close it when develop
