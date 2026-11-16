@@ -9,7 +9,8 @@
 #   2. `pip install --no-index --find-links wheelhouse` into a fresh venv,
 #      offline, so a missing wheel fails here rather than in someone's house
 #   3. launch the plugin against a scratch broker
-#   4. wait for it to register on homecore/plugins/<id>/register
+#   4. wait for it to register a device, publish its capabilities or report
+#      itself active
 #
 # Step 4 is the one that matters. Installing proves the wheelhouse is complete;
 # only registering proves the SDK imported, the compiled extensions loaded for
@@ -112,13 +113,19 @@ host, port, plugin_id, timeout = sys.argv[1], int(sys.argv[2]), sys.argv[3], flo
 seen = threading.Event()
 
 def on_message(client, _userdata, msg):
+    # A device registration, the capabilities manifest or an "active" status
+    # all prove the plugin started. A plugin with no devices of its own (the
+    # Assistant) only ever sends the last two.
+    if msg.topic.endswith("/status") and msg.payload.decode(errors="replace").strip() != "active":
+        return
     print(f"saw {msg.topic}", flush=True)
     seen.set()
 
 c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 c.on_message = on_message
 c.connect(host, port, 30)
-c.subscribe(f"homecore/plugins/{plugin_id}/register", qos=1)
+for topic in ("register", "capabilities", "status"):
+    c.subscribe(f"homecore/plugins/{plugin_id}/{topic}", qos=1)
 c.loop_start()
 sys.exit(0 if seen.wait(timeout) else 1)
 PY
