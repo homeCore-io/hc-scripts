@@ -2,8 +2,8 @@
 #
 # core/ is now one cargo workspace holding the server, its crates, the Rust SDK
 # and every plugin, so "check everything Rust" is a single command inside it.
-# What is left out here is genuinely separate: the Flutter app, the TUI, and the
-# non-Rust SDKs.
+# What is left out here is genuinely separate: the web app (hc-web-svelte, run
+# with npm in its own repo), the TUI, and the non-Rust SDKs.
 #
 # The three meta-workspace manifests (plugins/, clients/, sdks/Cargo.toml) this
 # file used to drive are gone. They existed to give repos a shared lockfile and
@@ -15,23 +15,26 @@
 #   just check                   # fmt + clippy + test, everything Rust
 #   just check-core              # the workspace: server, crates, SDK, plugins
 #   just check-plugin hc-hue     # one member of it
-#   just check-clients           # hc-tui and hc-web-leptos, each standalone
+#   just check-clients           # hc-tui, standalone
 #   just fmt / clippy / test     # one step across everything
 #   just build                   # debug build everything
 #   just build-release           # release build everything
 #   just clean                   # cargo clean, everything Rust
 #   just clean-release           # cargo clean --release only
-#   just clean-all               # + flutter, logs, devenv/direnv caches
+#   just clean-all               # + logs, devenv/direnv caches
+#   just sandbox                 # build core, run it on sandbox/ (see below)
 
 core_dir    := "core"
 clients_dir := "clients"
 
 # The Rust clients that are still their own repos. Each has its own lockfile
-# and is built on its own — there is no clients workspace any more.
-rust_clients := "hc-tui hc-web-leptos"
+# and is built on its own; there is no clients workspace any more. hc-web-leptos
+# is retired (the web app is hc-web-svelte), so it is no longer checked here.
+rust_clients := "hc-tui"
 
-# Strict-but-pragmatic clippy lints, matching per-plugin Justfile defaults.
-clippy_flags := "-D clippy::correctness -D clippy::suspicious -A clippy::type_complexity -A clippy::too_many_arguments"
+# The lints CI enforces (rust-ci.yml, and core/Justfile's clippy recipe), so a
+# green check here means a green lint step there.
+clippy_flags := "-D warnings -A clippy::type_complexity"
 
 # Destination for `deploy-local*` recipes. Override with: DEPLOY_DEST=/path just deploy-local
 DEPLOY_DEST := env_var_or_default("DEPLOY_DEST", "/var/tmp/homeCore")
@@ -43,16 +46,16 @@ check: check-core check-clients
 
 # ── Core ─────────────────────────────────────────────────────────────────────
 
-# The whole Rust workspace: server, 17 crates, the SDK, 13 plugins.
+# The whole Rust workspace: server, crates, SDK, every plugin (core/Cargo.toml).
 check-core:
     @echo "==> core workspace: check"
     just -f {{core_dir}}/Justfile check
 
-# One member of it — a plugin, a crate, the SDK.
+# One member of it: a plugin, a crate, the SDK. The same flags CI uses.
 check-plugin name:
     @echo "==> {{name}}: check"
     cargo fmt --manifest-path {{core_dir}}/Cargo.toml -p {{name}} -- --check
-    cargo clippy --manifest-path {{core_dir}}/Cargo.toml -p {{name}} --all-targets -- {{clippy_flags}}
+    cargo clippy --manifest-path {{core_dir}}/Cargo.toml -p {{name}} --all-targets --all-features -- {{clippy_flags}}
     cargo test --manifest-path {{core_dir}}/Cargo.toml -p {{name}}
 
 # ── Rust clients (separate repos, each with its own lockfile) ────────────────
@@ -120,11 +123,10 @@ build-release:
 #   just clean-core      the core workspace only
 #   just clean-clients   the standalone Rust clients only
 #   just clean-release   cargo clean --release only, everything Rust
-#   just clean-flutter   hc-web-flutter build/ + .dart_tool/ — by far the largest here
 #   just clean-logs      workspace logs/*.log
 #   just clean-env       devenv/direnv caches (.devenv/, .direnv/)
-#   just clean-all       clean + flutter + logs + env (clean-release is a subset
-#                        of clean, so it is not part of this)
+#   just clean-all       clean + logs + env (clean-release is a subset of
+#                        clean, so it is not part of this)
 #
 # NOT touched by any of these, on purpose: sandbox/. It is a real
 # HOMECORE_HOME — config, registry, redb state, INITIAL_ADMIN_PASSWORD — and
@@ -159,14 +161,6 @@ clean-release:
       cargo clean --release --manifest-path {{clients_dir}}/$c/Cargo.toml
     done
 
-# Needs flutter on PATH — devenv provides it.
-clean-flutter:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "==> hc-web-flutter: flutter clean"
-    cd "{{clients_dir}}/hc-web-flutter"
-    flutter clean
-
 clean-logs:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -180,7 +174,7 @@ clean-env:
     echo "==> removing .devenv/ and .direnv/"
     rm -rf .devenv .direnv
 
-clean-all: clean clean-flutter clean-logs clean-env
+clean-all: clean clean-logs clean-env
 
 # ── Local deploy ─────────────────────────────────────────────────────────────
 #
@@ -213,6 +207,13 @@ deploy-local-run *args="--all":
 # `just sandbox-build` rebuild + reinstall all managed plugins too, then run
 #                     (use after changing plugin code).
 # Plugins otherwise run from their installed copies under sandbox/plugins/.
+#
+# The sandbox uses the layout of any install: its config is
+# sandbox/config/homecore.toml, which is where core looks under --home when
+# nothing else names a config. The recipes still pass --config, because
+# HOMECORE_CONFIG outranks that default (--config > HOMECORE_CONFIG >
+# <home>/config/homecore.toml), and core runs on built-in defaults, without
+# a word, when the file it is given does not exist.
 
 sandbox_home := justfile_directory() / "sandbox"
 homecore_bin := justfile_directory() / "core/target/debug/homecore"
@@ -220,50 +221,21 @@ homecore_bin := justfile_directory() / "core/target/debug/homecore"
 # Build homecore, then run the sandbox instance
 sandbox:
     cargo build --manifest-path core/Cargo.toml --bin homecore
-    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/homecore.toml
+    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/config/homecore.toml
 
 # Run the sandbox without building (fastest)
 sandbox-run:
-    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/homecore.toml
+    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/config/homecore.toml
 
 # Rebuild everything, reinstall managed plugins into the sandbox, then run
 sandbox-build:
     cargo build --manifest-path core/Cargo.toml --workspace
     ./sandbox/reinstall-plugins.sh
-    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/homecore.toml
+    {{homecore_bin}} --home {{sandbox_home}} --config {{sandbox_home}}/config/homecore.toml
 
-# ── hc-web-flutter dev (one command: backend + proxy + hot reload) ────────────
+# ── Web app dev ─────────────────────────────────────────────────────────────
 #
-# `just hc-web-dev` brings the whole hc-web-flutter dev loop up, then open
-# http://localhost:3001 in a browser (login: admin / see sandbox/INITIAL_ADMIN_PASSWORD):
-#   - sandbox homeCore backend on :8080 (started only if not already healthy)
-#   - dev.mjs same-origin proxy on :3001 (app + /api, no CORS)
-#   - flutter run web-server on :5001 with hot reload (foreground)
-#
-# --no-web-resources-cdn is REQUIRED: the debug build otherwise loads CanvasKit
-# from the gstatic CDN, whose variant renders a BLANK page in real browsers.
-# Ctrl-C stops flutter run + the proxy; the sandbox backend is left running.
-#
-# flutter and node come from devenv (see devenv.nix) — this recipe no longer
-# prepends a hardcoded ~/flutter/bin or resolves node through mise, both of
-# which were left over from the Ubuntu period and are gone from this machine.
-
-hc_web_dir  := justfile_directory() / "clients/hc-web-flutter"
-
-hc-web-dev:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    if curl -sf -m 2 http://127.0.0.1:8080/api/v1/health >/dev/null 2>&1; then
-      echo "==> sandbox backend already up (:8080)"
-    else
-      echo "==> starting sandbox backend (:8080) — log: /tmp/hc-sandbox.log"
-      ( "{{homecore_bin}}" --home "{{sandbox_home}}" --config "{{sandbox_home}}/homecore.toml" >/tmp/hc-sandbox.log 2>&1 & )
-      for i in $(seq 1 30); do curl -sf -m 2 http://127.0.0.1:8080/api/v1/health >/dev/null 2>&1 && break; sleep 1; done
-    fi
-    cd "{{hc_web_dir}}"
-    HOMECORE_URL=http://127.0.0.1:8080 node tool/dev.mjs >/tmp/hc-web-proxy.log 2>&1 &
-    PROXY=$!
-    trap 'kill $PROXY 2>/dev/null || true' EXIT
-    echo "==> proxy on http://localhost:3001  (open this)"
-    echo "==> starting flutter run (hot reload — press r to reload, q to quit)"
-    flutter run -d web-server --web-port 5001 --web-hostname 127.0.0.1 --no-web-resources-cdn
+# The Flutter dev loop (hc-web-dev) is gone with the Flutter app. The web app
+# is hc-web-svelte: with the sandbox running, `npm run dev` in
+# clients/hc-web-svelte serves it with hot reload (set HC_CORE_URL in its .env
+# to http://127.0.0.1:8080). See that repo's README.
