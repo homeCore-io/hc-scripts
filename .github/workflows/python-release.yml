@@ -81,7 +81,7 @@ on:
           also means a tag that predates something plugins need produces
           artifacts that cannot start: v0.2.0 had no `from_config`, so a plugin
           built against it could not read the config file homeCore hands it.
-        default: 'v0.5.5'
+        default: 'v0.5.6'
         type: string
 
       publish_registry:
