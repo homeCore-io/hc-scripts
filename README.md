@@ -22,7 +22,7 @@ develop-red tracking issue. The web app publishes its own image from its own
 so there is no `node-release.yml`.
 
 `python-release.yml` builds against the Python SDK tag in its `sdk_ref` input
-(default `v0.5.5`; move it when a new SDK release should reach every plugin).
+(default `v0.5.6`; move it when a new SDK release should reach every plugin).
 On a tag push it first checks that the tag's trailing `vX.Y.Z` equals the
 plugin's `pyproject.toml` version and fails before building if not, the same
 gate `rust-release.yml` applies to `Cargo.toml`.
