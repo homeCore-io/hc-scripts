@@ -1,4 +1,4 @@
-# HomeCore workspace — local dev orchestration
+# homeCore workspace — local dev orchestration
 #
 # core/ is now one cargo workspace holding the server, its crates, the Rust SDK
 # and every plugin, so "check everything Rust" is a single command inside it.

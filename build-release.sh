@@ -85,7 +85,7 @@ step_cmd() {
 }
 
 echo "========================================"
-echo " HomeCore Release Builder"
+echo " homeCore Release Builder"
 echo "========================================"
 for s in "${STEPS[@]}"; do
     IFS='|' read -r name dir kind <<< "$s"

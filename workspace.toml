@@ -1,4 +1,4 @@
-# HomeCore workspace manifest
+# homeCore workspace manifest
 # Defines all repos, their roles, and their clone paths relative to this file.
 # Used by workspace-clone.sh and as the authoritative repo list.
 #
