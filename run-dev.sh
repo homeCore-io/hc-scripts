@@ -231,7 +231,7 @@ fi
 # Startup
 # ---------------------------------------------------------------------------
 
-echo "==> Starting HomeCore (dev)"
+echo "==> Starting homeCore (dev)"
 echo "    home  : $HOMECORE_SRC"
 echo "    config: $CONFIG"
 echo "    binary: $BINARY"

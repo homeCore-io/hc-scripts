@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-archive.sh — Build distributable HomeCore archives.
+# build-archive.sh — Build distributable homeCore archives.
 #
 # Two archive kinds:
 #   core       homecore/ with core binary + service templates, no plugins

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy.sh: build HomeCore from a workspace checkout and install it to a
+# deploy.sh: build homeCore from a workspace checkout and install it to a
 # prod-like local directory, for smoke-testing an install before a release.
 #
 # DESTINATION LAYOUT
@@ -49,7 +49,7 @@
 #   ./deploy.sh [OPTIONS] [COMPONENT...]
 #
 # COMPONENTS
-#   homecore        Main HomeCore server
+#   homecore        Main homeCore server
 #   hc-web-svelte   The web app and its UI server (needs node and npm)
 #   hc-<name>       A Rust plugin from core/plugins/ (--list prints them)
 #
@@ -421,7 +421,7 @@ if [[ ${#PLUGINS[@]} -eq 0 ]]; then
 fi
 
 echo
-log "HomeCore deploy"
+log "homeCore deploy"
 info "Components : ${COMPONENTS[*]}"
 info "Destination: $DEST"
 info "Build mode : $RELEASE_DIR"
