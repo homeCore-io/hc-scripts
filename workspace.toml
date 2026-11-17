@@ -58,7 +58,7 @@ path   = "sdks/hc-plugin-sdk-dotnet"
 remote = "git@github.com:homeCore-io/hc-plugin-sdk-dotnet.git"
 
 # The UI extensions homeCore makes, one directory each (drawings and cards
-# the web app's looks can choose). Not on GitHub yet.
+# the web app's looks can choose).
 [[repo]]
 role   = "extension"
 name   = "hc-extensions"
@@ -85,7 +85,7 @@ remote = "git@github.com:homeCore-io/hc-web-lit.git"
 
 [[repo]]
 role   = "client"
-name   = "hc-web-leptos"
+name   = "hc-web-leptos"  # retired; the web app is hc-web-svelte
 path   = "clients/hc-web-leptos"
 remote = "git@github.com:homeCore-io/hc-web-leptos.git"
 
