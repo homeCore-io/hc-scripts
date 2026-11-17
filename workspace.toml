@@ -8,6 +8,7 @@
 #   sdk     — plugin SDKs for other languages (Python, Node.js, .NET)
 #   client  — UI and API consumers (web, TUI, MCP)
 #   extension — UI extensions for the web app
+#   docs    — the docs site, and the Agent Skills (hc-mcp ships a copy)
 #
 # The thirteen Rust plugin repos and hc-plugin-sdk-rs are NOT listed here any
 # more. hc-matter is: it is TypeScript (matter.js), so it stays its own repo for
@@ -112,3 +113,9 @@ name   = "homeCore-io.github.io"
 path   = "homeCore-io.github.io"
 remote = "git@github.com:homeCore-io/homeCore-io.github.io.git"
 
+
+[[repo]]
+role   = "docs"
+name   = "skills"
+path   = "skills"
+remote = "git@github.com:homeCore-io/skills.git"
