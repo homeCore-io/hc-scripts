@@ -1,59 +1,67 @@
 #!/usr/bin/env bash
-# deploy.sh — Build and install HomeCore to a prod-like local environment.
+# deploy.sh: build HomeCore from a workspace checkout and install it to a
+# prod-like local directory, for smoke-testing an install before a release.
 #
 # DESTINATION LAYOUT
 # ==================
 #   $DEST/
 #     bin/
-#       homecore                       ← main binary
+#       homecore                       main binary
 #     config/
-#       homecore.toml                  ← main config (preserved; --force-config to overwrite)
-#       profiles/                      ← ecosystem profiles (all files, recursively)
-#     rules/                           ← automation rule RON files
-#     data/                            ← state.redb, history.db  (runtime, not deployed)
-#     logs/                            ← homecore rolling logs    (runtime, not deployed)
-#     ui/
-#       dist/                          ← Leptos/WASM admin UI (trunk build output)
+#       homecore.toml                  main config (preserved; --force-config to overwrite)
+#       profiles/                      ecosystem profiles (all files, recursively)
+#     rules/                           automation rule RON files
+#     data/                            state.redb, history.db  (runtime, not deployed)
+#     logs/                            homecore rolling logs    (runtime, not deployed)
 #     scripts/
-#       service-templates/             ← systemd / launchd unit templates
+#       service-templates/             systemd / launchd unit templates
 #     plugins/
 #       hc-yolink/
-#         bin/hc-yolink                ← plugin binary
-#         config/config.toml           ← plugin config (preserved; --force-config to overwrite)
-#         logs/                        ← plugin logs land here automatically
-#       hc-lutron/  hc-sonos/  hc-hue/  hc-zwave/
-#         (same structure as above)
+#         bin/hc-yolink                plugin binary
+#         config/config.toml           plugin config (preserved; --force-config to overwrite)
+#         logs/                        plugin logs land here automatically
+#       hc-hue/  hc-zwave/  ...        (same structure, one per plugin)
+#     web/                             hc-web-svelte, the web app and its UI server
+#       build/  server/  package.json  (replaced on each deploy)
+#       data/                          the UI server's documents (HC_DATA_DIR, kept)
 #
-# NOTE: Plugin log dirs are derived automatically by the plugin from its config
-# path (Path::new(config_path).parent().parent().join("logs")), so as long as
-# config is deployed to plugins/<name>/config/config.toml the logs go to
-# plugins/<name>/logs/ with no extra wiring required.
+# Plugin log dirs are derived by the plugin from its config path
+# (<config dir>/../logs), so a config at plugins/<name>/config/config.toml
+# logs to plugins/<name>/logs/ with no extra wiring.
+#
+# WHERE THINGS COME FROM
+# ======================
+#   homecore and every Rust plugin are members of core's cargo workspace
+#   (core/Cargo.toml). They are built there in one cargo invocation and their
+#   binaries come from core/target/<release|debug>/. The plugin list is read
+#   from the workspace members, so a new plugin needs no change here.
+#   hc-captest and hc-plugin-template are members too but are left out.
+#
+#   The web app is clients/hc-web-svelte. It is a Node server (the app plus
+#   the UI server that proxies /api/v1 to core), not a static bundle core
+#   serves, so it is built with npm and installed under $DEST/web/. You start
+#   it yourself with node; the summary prints the command. The usual way to
+#   run it beside core is its container (ghcr.io/homecore-io/hc-web-svelte,
+#   see the docker repo), and this component is optional.
 #
 # USAGE
 # =====
 #   ./deploy.sh [OPTIONS] [COMPONENT...]
 #
 # COMPONENTS
-#   homecore      Main HomeCore server
-#   hc-web-leptos Leptos/WASM admin UI (requires trunk)
-#   hc-yolink     YoLink cloud MQTT bridge
-#   hc-lutron     Lutron RadioRA2 telnet bridge
-#   hc-sonos      Sonos UPnP bridge
-#   hc-hue        Philips Hue bridge
-#   hc-wled       WLED LED controller
-#   hc-zwave      Z-Wave JS WebSocket bridge
-#   hc-isy        ISY994 / Polisy / eISY bridge
-#   hc-caseta     Lutron Caseta Pro bridge
-#   hc-ecowitt    Ecowitt weather station gateway
-#   hc-roku       Roku player / Roku TV (ECP)
+#   homecore        Main HomeCore server
+#   hc-web-svelte   The web app and its UI server (needs node and npm)
+#   hc-<name>       A Rust plugin from core/plugins/ (--list prints them)
 #
 # OPTIONS
 #   --all           Build and install all components (default when none specified)
-#   --no-build      Skip cargo build; install already-built release binaries
+#   --no-build      Skip building; install what is already built
 #   --sync-config   Copy configs from source (skips files that already exist)
 #   --force-config  Overwrite configs from source even if they already exist
 #   --dest DIR      Installation directory (default: /var/tmp/homeCore)
 #   --debug         Build debug instead of release
+#   --dry-run       Check sources and print what would be built and installed
+#   --list          Print the components and exit
 #   --help          Show this help
 
 set -euo pipefail
@@ -68,6 +76,7 @@ DEST="/var/tmp/homeCore"
 BUILD=true
 SYNC_CONFIG=false
 FORCE_CONFIG=false
+DRY_RUN=false
 RELEASE_FLAG="--release"
 RELEASE_DIR="release"
 COMPONENTS=()
@@ -77,52 +86,37 @@ COMPONENTS=()
 # ---------------------------------------------------------------------------
 
 HOMECORE_SRC="$WORKSPACE_ROOT/core"
-WEBUI_SRC="$WORKSPACE_ROOT/clients/hc-web-leptos"
+PLUGINS_SRC="$HOMECORE_SRC/plugins"
+WEB_SRC="$WORKSPACE_ROOT/clients/hc-web-svelte"
+WEB_COMPONENT="hc-web-svelte"
+
+# Workspace members that are not plugins anyone deploys.
+EXCLUDED_PLUGINS="hc-captest hc-plugin-template"
 
 # ===========================================================================
-# PLUGIN REGISTRY
+# PLUGIN LIST, from core/Cargo.toml's [workspace] members
 # ===========================================================================
 #
-# To add a new plugin:
-#   1. Add the name to PLUGINS array
-#   2. Add its source directory to PLUGIN_SRC_DIR
-#   3. Add the repo to workspace.toml
-#   4. Ensure its source has config/config.toml.example
-#
-# Each plugin is automatically deployed to:
+# Each plugin is deployed to:
 #   $DEST/plugins/<name>/bin/<name>
-#   $DEST/plugins/<name>/config/config.toml  (from source config/config.toml)
-#   $DEST/plugins/<name>/logs/               (empty dir, logs land here at runtime)
+#   $DEST/plugins/<name>/config/config.toml  (from source config/config.toml,
+#                                             or config.toml.example)
+#   $DEST/plugins/<name>/logs/               (empty; logs land here at runtime)
 
-PLUGINS=(
-    hc-yolink
-    hc-lutron
-    hc-caseta
-    hc-sonos
-    hc-hue
-    hc-wled
-    hc-zwave
-    hc-isy
-    hc-ecowitt
-    hc-thermostat
-    hc-roku
-)
+PLUGINS=()
+if [[ -f "$HOMECORE_SRC/Cargo.toml" ]]; then
+    while IFS= read -r name; do
+        [[ " $EXCLUDED_PLUGINS " == *" $name "* ]] && continue
+        PLUGINS+=("$name")
+    done < <(
+        sed -n '/^\[workspace\]/,/^\]/p' "$HOMECORE_SRC/Cargo.toml" \
+            | grep -o '"plugins/hc-[^"]*"' \
+            | tr -d '"' \
+            | sed 's#^plugins/##'
+    )
+fi
 
-declare -A PLUGIN_SRC_DIR=(
-    [hc-yolink]="$WORKSPACE_ROOT/plugins/hc-yolink"
-    [hc-lutron]="$WORKSPACE_ROOT/plugins/hc-lutron"
-    [hc-caseta]="$WORKSPACE_ROOT/plugins/hc-caseta"
-    [hc-sonos]="$WORKSPACE_ROOT/plugins/hc-sonos"
-    [hc-hue]="$WORKSPACE_ROOT/plugins/hc-hue"
-    [hc-wled]="$WORKSPACE_ROOT/plugins/hc-wled"
-    [hc-zwave]="$WORKSPACE_ROOT/plugins/hc-zwave"
-    [hc-isy]="$WORKSPACE_ROOT/plugins/hc-isy"
-    [hc-ecowitt]="$WORKSPACE_ROOT/plugins/hc-ecowitt"
-    [hc-thermostat]="$WORKSPACE_ROOT/plugins/hc-thermostat"
-    [hc-roku]="$WORKSPACE_ROOT/plugins/hc-roku"
-)
-
-ALL_COMPONENTS=(homecore hc-web-leptos "${PLUGINS[@]}")
+ALL_COMPONENTS=(homecore "$WEB_COMPONENT" "${PLUGINS[@]}")
 
 # ===========================================================================
 # ARGUMENT PARSING
@@ -134,8 +128,19 @@ while [[ $# -gt 0 ]]; do
         --no-build)     BUILD=false; shift ;;
         --sync-config)  SYNC_CONFIG=true; shift ;;
         --force-config) FORCE_CONFIG=true; SYNC_CONFIG=true; shift ;;
-        --dest)         DEST="$2"; shift 2 ;;
+        --dest)
+            [[ $# -ge 2 ]] || { echo "ERROR: --dest needs a directory" >&2; exit 1; }
+            DEST="$2"; shift 2 ;;
         --debug)        RELEASE_FLAG=""; RELEASE_DIR="debug"; shift ;;
+        --dry-run)      DRY_RUN=true; shift ;;
+        --list)
+            if [[ ${#PLUGINS[@]} -eq 0 ]]; then
+                echo "ERROR: no plugins found in $HOMECORE_SRC/Cargo.toml" >&2
+                exit 1
+            fi
+            printf '%s\n' "${ALL_COMPONENTS[@]}"
+            exit 0
+            ;;
         --help|-h)
             sed -n '/^# USAGE/,/^[^#]/p' "$0" | grep '^#' | sed 's/^# \?//'
             exit 0
@@ -171,28 +176,38 @@ ok()   { echo "    [ok]     $*"; }
 skip() { echo "    [skip]   $*"; }
 warn() { echo "    [warn]   $*"; }
 
+is_plugin() {
+    local comp="$1"
+    [[ "$comp" != "homecore" && "$comp" != "$WEB_COMPONENT" ]]
+}
+
 # Return 0 if a component's source directory exists and is buildable
 check_source() {
     local comp="$1"
     if [[ "$comp" == "homecore" ]]; then
         [[ -f "$HOMECORE_SRC/Cargo.toml" ]]
-    elif [[ "$comp" == "hc-web-leptos" ]]; then
-        [[ -f "$WEBUI_SRC/Trunk.toml" ]]
+    elif [[ "$comp" == "$WEB_COMPONENT" ]]; then
+        [[ -f "$WEB_SRC/package.json" ]]
     else
-        local dir="${PLUGIN_SRC_DIR[$comp]:-}"
-        [[ -n "$dir" && -f "$dir/Cargo.toml" ]]
+        [[ -f "$PLUGINS_SRC/$comp/Cargo.toml" ]]
     fi
 }
 
-# Print the path to a built binary for a component
-binary_src_path() {
+source_path() {
     local comp="$1"
     if [[ "$comp" == "homecore" ]]; then
-        echo "$HOMECORE_SRC/target/$RELEASE_DIR/homecore"
+        echo "$HOMECORE_SRC"
+    elif [[ "$comp" == "$WEB_COMPONENT" ]]; then
+        echo "$WEB_SRC"
     else
-        local dir="${PLUGIN_SRC_DIR[$comp]}"
-        echo "$dir/target/$RELEASE_DIR/$comp"
+        echo "$PLUGINS_SRC/$comp"
     fi
+}
+
+# Every binary, core's and the plugins', lands in core's workspace target dir.
+binary_src_path() {
+    local comp="$1"
+    echo "$HOMECORE_SRC/target/$RELEASE_DIR/$comp"
 }
 
 # Copy a file from src to dst, respecting FORCE_CONFIG / SYNC_CONFIG.
@@ -208,9 +223,11 @@ sync_file() {
         return
     fi
 
+    local existed=false
+    [[ -e "$dst" ]] && existed=true
     mkdir -p "$(dirname "$dst")"
     cp "$src" "$dst"
-    if $FORCE_CONFIG && [[ -e "$dst" ]]; then
+    if $existed; then
         info "[updated] $label"
     else
         info "[created] $label"
@@ -218,7 +235,7 @@ sync_file() {
 }
 
 # ===========================================================================
-# SCAFFOLD — create the destination directory tree (idempotent)
+# SCAFFOLD: create the destination directory tree (idempotent)
 # ===========================================================================
 
 scaffold_homecore() {
@@ -228,11 +245,10 @@ scaffold_homecore() {
     mkdir -p "$DEST/rules"
     mkdir -p "$DEST/data"
     mkdir -p "$DEST/logs"
-    mkdir -p "$DEST/ui/dist"
     mkdir -p "$DEST/scripts/service-templates"
-    info "bin/  config/  rules/  data/  logs/  ui/dist/  scripts/"
+    info "bin/  config/  rules/  data/  logs/  scripts/"
 
-    # Copy scripts unconditionally — these are not credentials-bearing config files
+    # Copy scripts unconditionally; these are not credentials-bearing config files
     if [[ -d "$HOMECORE_SRC/scripts" ]]; then
         while IFS= read -r -d '' f; do
             local rel_path="${f#"$HOMECORE_SRC/scripts/"}"
@@ -248,7 +264,7 @@ scaffold_homecore() {
     local cfg_example="$HOMECORE_SRC/config/homecore.toml.example"
     if [[ ! -f "$cfg_dst" && -f "$cfg_example" ]]; then
         cp "$cfg_example" "$cfg_dst"
-        info "[created] config/homecore.toml  (from .example — update credentials before running)"
+        info "[created] config/homecore.toml  (from .example; update credentials before running)"
     fi
 }
 
@@ -261,27 +277,42 @@ scaffold_plugin() {
     info "plugins/$name/bin/  plugins/$name/config/  plugins/$name/logs/"
 }
 
+scaffold_web() {
+    log "Scaffolding web app dirs: web/"
+    mkdir -p "$DEST/web/data"
+    info "web/  web/data/"
+}
+
 # ===========================================================================
 # BUILD
 # ===========================================================================
 
-build_component() {
-    local comp="$1"
-    if [[ "$comp" == "homecore" ]]; then
-        log "Building homecore ($RELEASE_DIR)"
-        cargo build $RELEASE_FLAG --manifest-path "$HOMECORE_SRC/Cargo.toml"
-    elif [[ "$comp" == "hc-web-leptos" ]]; then
-        log "Building hc-web-leptos (trunk build --release)"
-        trunk build --release --config "$WEBUI_SRC/Trunk.toml"
-    else
-        local dir="${PLUGIN_SRC_DIR[$comp]}"
-        log "Building $comp ($RELEASE_DIR)"
-        cargo build $RELEASE_FLAG --manifest-path "$dir/Cargo.toml"
-    fi
+# homecore and the plugins share one workspace, so build them in one cargo
+# run: shared dependencies compile once.
+cargo_packages() {
+    local comp
+    for comp in "${COMPONENTS[@]}"; do
+        [[ "$comp" == "$WEB_COMPONENT" ]] && continue
+        printf -- '-p %s ' "$comp"
+    done
+}
+
+build_rust() {
+    local pkgs
+    pkgs="$(cargo_packages)"
+    [[ -z "$pkgs" ]] && return 0
+    log "Building in core's workspace ($RELEASE_DIR): ${pkgs//-p /}"
+    # shellcheck disable=SC2086  # RELEASE_FLAG and pkgs are word lists on purpose
+    cargo build $RELEASE_FLAG --manifest-path "$HOMECORE_SRC/Cargo.toml" $pkgs
+}
+
+build_web() {
+    log "Building $WEB_COMPONENT (npm ci, npm run build)"
+    (cd "$WEB_SRC" && npm ci && npm run build)
 }
 
 # ===========================================================================
-# INSTALL BINARIES
+# INSTALL
 # ===========================================================================
 
 install_homecore_binary() {
@@ -317,21 +348,20 @@ install_plugin_binary() {
     ok "plugins/$name/bin/$name"
 }
 
-install_webui() {
-    local src_dist="$WEBUI_SRC/dist"
-    local dst_dist="$DEST/ui/dist"
-
-    if [[ ! -d "$src_dist" ]]; then
-        echo "ERROR: hc-web-leptos dist not found: $src_dist" >&2
-        echo "       Run without --no-build, or run 'trunk build --release' first." >&2
+# The same files the app's Dockerfile puts in its image: build/ holds the app
+# with every package bundled in, server/ is the UI server. No node_modules.
+install_web() {
+    if [[ ! -d "$WEB_SRC/build" ]]; then
+        echo "ERROR: $WEB_COMPONENT build not found: $WEB_SRC/build" >&2
+        echo "       Run without --no-build, or run 'npm run build' there first." >&2
         return 1
     fi
 
-    # Clean previous build and sync fresh assets
-    rm -rf "$dst_dist"
-    mkdir -p "$dst_dist"
-    cp -r "$src_dist/." "$dst_dist/"
-    ok "ui/dist/  ($(find "$dst_dist" -type f | wc -l) files)"
+    rm -rf "$DEST/web/build" "$DEST/web/server"
+    cp -r "$WEB_SRC/build" "$DEST/web/build"
+    cp -r "$WEB_SRC/server" "$DEST/web/server"
+    cp "$WEB_SRC/package.json" "$DEST/web/package.json"
+    ok "web/build/  web/server/  web/package.json  ($(find "$DEST/web/build" -type f | wc -l) files in build/)"
 }
 
 # ===========================================================================
@@ -345,7 +375,7 @@ sync_homecore_config() {
     local cfg="$HOMECORE_SRC/config/homecore.toml"
     [[ -f "$cfg" ]] && sync_file "$cfg" "$DEST/config/homecore.toml"
 
-    # All ecosystem profiles — one recursive pass, no special-casing for subdirs
+    # All ecosystem profiles, one recursive pass
     if [[ -d "$HOMECORE_SRC/config/profiles" ]]; then
         while IFS= read -r -d '' f; do
             local rel_path="${f#"$HOMECORE_SRC/config/profiles/"}"
@@ -361,19 +391,18 @@ sync_homecore_config() {
             sync_file "$f" "$DEST/rules/$rel_path"
         done < <(find "$HOMECORE_SRC/rules" -type f \( -name "*.ron" -o -name "*.toml" \) -print0)
     fi
-
 }
 
 sync_plugin_config() {
     local name="$1"
-    local src_dir="${PLUGIN_SRC_DIR[$name]}"
+    local src_dir="$PLUGINS_SRC/$name"
 
     # Prefer the real config; fall back to the example if not yet created
     local src="$src_dir/config/config.toml"
     if [[ ! -f "$src" ]]; then
         src="$src_dir/config/config.toml.example"
         if [[ ! -f "$src" ]]; then
-            warn "$name: no config/config.toml or config/config.toml.example found — skipping"
+            warn "$name: no config/config.toml or config/config.toml.example found; skipping"
             return
         fi
         warn "$name: config/config.toml not found; deploying .example (rename and fill in credentials)"
@@ -386,6 +415,11 @@ sync_plugin_config() {
 # MAIN
 # ===========================================================================
 
+if [[ ${#PLUGINS[@]} -eq 0 ]]; then
+    echo "ERROR: no plugins found in $HOMECORE_SRC/Cargo.toml (is core cloned?)" >&2
+    exit 1
+fi
+
 echo
 log "HomeCore deploy"
 info "Components : ${COMPONENTS[*]}"
@@ -396,35 +430,60 @@ if $FORCE_CONFIG; then
 else
     info "Sync config: $SYNC_CONFIG"
 fi
+$DRY_RUN && info "Dry run    : nothing is built or installed"
 echo
 
 # ---------------------------------------------------------------------------
-# Pre-flight: verify all requested source dirs exist before doing any work
+# Pre-flight: verify all requested sources (and tools) exist before any work
 # ---------------------------------------------------------------------------
 log "Checking source directories"
+WANT_WEB=false
+WANT_RUST=false
 for comp in "${COMPONENTS[@]}"; do
     if ! check_source "$comp"; then
-        if [[ "$comp" == "homecore" ]]; then
-            echo "ERROR: homecore source not found at $HOMECORE_SRC" >&2
-        elif [[ "$comp" == "hc-web-leptos" ]]; then
-            echo "ERROR: hc-web-leptos source not found at $WEBUI_SRC (missing Trunk.toml)" >&2
-        else
-            echo "ERROR: $comp source not found at ${PLUGIN_SRC_DIR[$comp]:-<unknown>}" >&2
-        fi
+        echo "ERROR: $comp source not found at $(source_path "$comp")" >&2
         exit 1
     fi
+    if [[ "$comp" == "$WEB_COMPONENT" ]]; then WANT_WEB=true; else WANT_RUST=true; fi
     info "found: $comp"
 done
+if $BUILD; then
+    if $WANT_RUST && ! command -v cargo >/dev/null 2>&1; then
+        echo "ERROR: cargo not found on PATH" >&2; exit 1
+    fi
+    if $WANT_WEB && ! command -v npm >/dev/null 2>&1; then
+        echo "ERROR: npm not found on PATH (needed for $WEB_COMPONENT; leave it out to skip)" >&2
+        exit 1
+    fi
+fi
 echo
+
+if $DRY_RUN; then
+    log "Would run"
+    if $BUILD; then
+        pkgs="$(cargo_packages)"
+        [[ -n "$pkgs" ]] && info "cargo build $RELEASE_FLAG --manifest-path $HOMECORE_SRC/Cargo.toml $pkgs"
+        $WANT_WEB && info "(cd $WEB_SRC && npm ci && npm run build)"
+    fi
+    log "Would install"
+    for comp in "${COMPONENTS[@]}"; do
+        if [[ "$comp" == "homecore" ]]; then
+            info "$(binary_src_path homecore) -> $DEST/bin/homecore"
+        elif [[ "$comp" == "$WEB_COMPONENT" ]]; then
+            info "$WEB_SRC/{build,server,package.json} -> $DEST/web/"
+        else
+            info "$(binary_src_path "$comp") -> $DEST/plugins/$comp/bin/$comp"
+        fi
+    done
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 if $BUILD; then
-    for comp in "${COMPONENTS[@]}"; do
-        build_component "$comp"
-        echo
-    done
+    $WANT_RUST && { build_rust; echo; }
+    $WANT_WEB && { build_web; echo; }
 fi
 
 # ---------------------------------------------------------------------------
@@ -433,9 +492,8 @@ fi
 for comp in "${COMPONENTS[@]}"; do
     if [[ "$comp" == "homecore" ]]; then
         scaffold_homecore
-    elif [[ "$comp" == "hc-web-leptos" ]]; then
-        # ui/dist/ is created by scaffold_homecore; ensure it exists standalone too
-        mkdir -p "$DEST/ui/dist"
+    elif [[ "$comp" == "$WEB_COMPONENT" ]]; then
+        scaffold_web
     else
         scaffold_plugin "$comp"
     fi
@@ -443,14 +501,14 @@ done
 echo
 
 # ---------------------------------------------------------------------------
-# Install binaries
+# Install
 # ---------------------------------------------------------------------------
-log "Installing binaries"
+log "Installing"
 for comp in "${COMPONENTS[@]}"; do
     if [[ "$comp" == "homecore" ]]; then
         install_homecore_binary
-    elif [[ "$comp" == "hc-web-leptos" ]]; then
-        install_webui
+    elif [[ "$comp" == "$WEB_COMPONENT" ]]; then
+        install_web
     else
         install_plugin_binary "$comp"
     fi
@@ -464,8 +522,8 @@ if $SYNC_CONFIG; then
     for comp in "${COMPONENTS[@]}"; do
         if [[ "$comp" == "homecore" ]]; then
             sync_homecore_config
-        elif [[ "$comp" == "hc-web-leptos" ]]; then
-            : # no config to sync for web UI
+        elif [[ "$comp" == "$WEB_COMPONENT" ]]; then
+            : # the web app takes its settings from the environment
         else
             sync_plugin_config "$comp"
         fi
@@ -476,26 +534,36 @@ fi
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-log "Deploy complete → $DEST"
+log "Deploy complete: $DEST"
 echo
 
-if [[ ! -f "$DEST/config/homecore.toml" ]]; then
+if [[ " ${COMPONENTS[*]} " == *" homecore "* && ! -f "$DEST/config/homecore.toml" ]]; then
     echo "  NOTE: $DEST/config/homecore.toml does not exist."
     echo "        Run with --sync-config to copy from source, or create manually."
     echo
 fi
 
-echo "  To enable the web UI, set in homecore.toml:"
-echo "    [web_admin]"
-echo "    enabled   = true"
-echo "    dist_path = \"ui/dist\""
-echo
-echo "  Plugin binary paths in homecore.toml should be:"
-for name in "${PLUGINS[@]}"; do
-    echo "    binary = \"plugins/$name/bin/$name\""
+if $WANT_WEB; then
+    echo "  Start the web app (it proxies /api/v1 to core at HC_CORE_URL):"
+    echo "    HC_CORE_URL=http://127.0.0.1:8080 HC_DATA_DIR=$DEST/web/data PORT=3001 \\"
+    echo "      BODY_SIZE_LIMIT=Infinity node $DEST/web/server/index.js"
+    echo
+fi
+
+DEPLOYED_PLUGINS=()
+for comp in "${COMPONENTS[@]}"; do
+    is_plugin "$comp" && DEPLOYED_PLUGINS+=("$comp")
 done
-echo
-echo "  Plugin config args in homecore.toml should be:"
-for name in "${PLUGINS[@]}"; do
-    echo "    config = \"plugins/$name/config/config.toml\""
-done
+if [[ ${#DEPLOYED_PLUGINS[@]} -gt 0 ]]; then
+    echo "  Core installs plugins from the registry, not from these paths. To have"
+    echo "  core supervise a plugin you built here, add to homecore.toml:"
+    for name in "${DEPLOYED_PLUGINS[@]}"; do
+        echo
+        echo "    [[plugins]]"
+        echo "    id      = \"plugin.${name#hc-}\""
+        echo "    binary  = \"plugins/$name/bin/$name\""
+        echo "    config  = \"plugins/$name/config/config.toml\""
+        echo "    enabled = true"
+    done
+    echo
+fi
