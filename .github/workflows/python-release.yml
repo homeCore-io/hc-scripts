@@ -81,7 +81,7 @@ on:
           also means a tag that predates something plugins need produces
           artifacts that cannot start: v0.2.0 had no `from_config`, so a plugin
           built against it could not read the config file homeCore hands it.
-        default: 'v0.3.0'
+        default: 'v0.5.5'
         type: string
 
       publish_registry:
@@ -118,6 +118,36 @@ jobs:
       category: ${{ steps.build.outputs.category }}
     steps:
       - uses: actions/checkout@v7
+
+      # The archive name, the plugin.toml and the registry entry all carry
+      # the pyproject version, while the Release is filed under the tag. If
+      # the two disagree, the registry points at a download URL under one
+      # version for a file named for another, so stop before building.
+      # Tags are `vX.Y.Z` or `<name>-vX.Y.Z` (hc-plugins-py tags
+      # `hc-virtuallight-v0.1.0`); only the trailing vX.Y.Z is compared.
+      - name: Check the tag matches the pyproject version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+          PLUGIN_DIR: ${{ inputs.plugin_dir }}
+        run: |
+          set -euo pipefail
+          tag_version="$(printf '%s' "$TAG" \
+            | sed -nE 's/^(.*-)?v([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]*)?)$/\2/p')"
+          if [ -z "$tag_version" ]; then
+            echo "::error::Tag $TAG does not end in vX.Y.Z, so it names no version to release."
+            exit 1
+          fi
+          if [ ! -f "$PLUGIN_DIR/pyproject.toml" ]; then
+            echo "::error::$PLUGIN_DIR/pyproject.toml does not exist."
+            exit 1
+          fi
+          py_version="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$PLUGIN_DIR/pyproject.toml")"
+          if [ "$tag_version" != "$py_version" ]; then
+            echo "::error file=$PLUGIN_DIR/pyproject.toml::Tag $TAG says $tag_version, but $PLUGIN_DIR/pyproject.toml says $py_version. Set [project] version to $tag_version and tag again."
+            exit 1
+          fi
+          echo "Tag $TAG matches $PLUGIN_DIR/pyproject.toml version $py_version"
 
       - name: Check out the SDK at its pinned tag
         uses: actions/checkout@v7

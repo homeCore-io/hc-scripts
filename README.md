@@ -9,7 +9,7 @@ Work on `develop`, then PR to `main`.
 | Workflow | Used by |
 |---|---|
 | `.github/workflows/rust-ci.yml` | every Rust repo's `ci.yml` — fmt, clippy, test |
-| `.github/workflows/rust-release.yml` | every Rust repo's `release.yml` — build, Docker publish, appliance dispatch |
+| `.github/workflows/rust-release.yml` | every Rust repo's `release.yml`: build, archive (plus any `extra_files`), the `hc-core` image, signed registry artifacts for plugins |
 | `.github/workflows/node-ci.yml` | `hc-web-svelte`'s `ci.yml` and `release.yml` (typecheck, lint, format, test, build) |
 | `.github/workflows/python-release.yml` | Python plugins' `release.yml`: a hermetic artifact a plugin runtime installs offline (none released yet) |
 | `.github/workflows/flutter-ci.yml` | the retired Flutter app (`hc-web-flutter`), kept for its repo's history |
@@ -20,6 +20,57 @@ same rules below: the pinned toolchain, the `permissions` block, the
 develop-red tracking issue. The web app publishes its own image from its own
 `release.yml` (its `Dockerfile` lives in its repo, not in `homeCore-io/docker`),
 so there is no `node-release.yml`.
+
+`python-release.yml` builds against the Python SDK tag in its `sdk_ref` input
+(default `v0.5.5`; move it when a new SDK release should reach every plugin).
+On a tag push it first checks that the tag's trailing `vX.Y.Z` equals the
+plugin's `pyproject.toml` version and fails before building if not, the same
+gate `rust-release.yml` applies to `Cargo.toml`.
+
+## Workspace tooling
+
+The homeCore workspace is a plain directory holding every repo at the path
+`workspace.toml` gives it (`core/`, `clients/hc-web-svelte/`, `hc-scripts/`,
+and so on). It is not a repository itself, so the files it needs at its root
+live here:
+
+| Here | At the workspace root | |
+|---|---|---|
+| `workspace.toml` | `workspace.toml` (symlink) | the repo list; `workspace-clone.sh` clones from it |
+| `Justfile.workspace` | `Justfile` (symlink) | local checks, builds, the sandbox |
+| `devenv/` | `devenv.nix`, `devenv.yaml`, `devenv.lock`, `.envrc` (copies) | the dev shell; see [`devenv/README.md`](devenv/README.md) |
+
+```bash
+ln -s hc-scripts/workspace.toml workspace.toml
+ln -s hc-scripts/Justfile.workspace Justfile
+```
+
+### The Justfile
+
+`just check` runs fmt, clippy and tests across core's cargo workspace (the
+server, its crates, the Rust SDK and every Rust plugin) and `hc-tui`.
+`just check-plugin <name>` checks one workspace member. Clippy runs with the
+flags CI uses (`-D warnings -A clippy::type_complexity`), so green here means
+green there.
+
+`just sandbox` builds `homecore` and runs it on `<workspace>/sandbox/`, a
+real home directory laid out like any install: config in
+`sandbox/config/homecore.toml`, state in `sandbox/data/`. `sandbox-run` skips
+the build; `sandbox-build` builds the whole workspace and runs
+`sandbox/reinstall-plugins.sh`, which you provide. No `clean` recipe touches
+`sandbox/`.
+
+### deploy.sh
+
+`deploy.sh` (or `just deploy-local`) builds from the workspace and installs a
+prod-like tree to `/var/tmp/homeCore` or `--dest`. `homecore` and the plugins
+are built in core's cargo workspace in one run, and the plugin list comes from
+`core/Cargo.toml`'s members (less `hc-captest` and `hc-plugin-template`), so a
+new plugin needs no edit here. The `hc-web-svelte` component builds the web
+app with npm and installs it under `web/`; it is a Node server you start
+yourself (the summary prints the command), and the usual way to run it is its
+container. `--list` prints the components and `--dry-run` shows what would be
+built and installed without doing either.
 
 ---
 

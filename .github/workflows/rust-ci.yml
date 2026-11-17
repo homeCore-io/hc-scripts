@@ -12,11 +12,19 @@
 #       branches: [main, develop]
 #     pull_request:
 #       branches: [main]
+#   # Required: a called workflow never holds more than its caller grants,
+#   # and the develop-red tracking issue needs issues: write. Without this
+#   # block the run dies at startup with zero jobs. See the README.
+#   permissions:
+#     contents: read
+#     issues: write
 #   jobs:
 #     ci:
 #       uses: homeCore-io/hc-scripts/.github/workflows/rust-ci.yml@main
-#       with:
-#         rust_version: "1.88"
+#
+# Do not pass rust_version. The default is pinned to the toolchain the
+# Dockerfiles ship, and a caller override (above all "stable") gates merges
+# on a compiler nothing is built with. Only the weekly canary.yml passes it.
 
 name: rust-ci
 
