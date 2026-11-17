@@ -7,8 +7,9 @@
 #
 # There used to be a third, `appliance`, which merged core with every plugin
 # fragment into one tarball, and a --ui-dist flag that folded in the Leptos WASM
-# bundle. Both are gone: the UI is hc-web-flutter (its own container) and plugins install
-# at runtime from the signed registry, so nothing produced or consumed either.
+# bundle. Both are gone: the UI is hc-web-svelte (its own container) and plugins
+# install at runtime from the signed registry, so nothing produced or consumed
+# either.
 #
 # Every archive's top-level directory is `homecore/` so users extract
 # wherever they want — `tar -xf <archive>` produces a `homecore/` tree.
@@ -38,6 +39,10 @@
 #   --bin             path to a prebuilt binary (overrides default cargo path)
 #   --out             output directory (default: dist/)
 #   --build           run cargo build before packaging (default: off)
+#   --extra PATH      also copy PATH (a file or a directory, relative to --source)
+#                     into the archive at the same relative path: under homecore/
+#                     for core, under homecore/plugins/<name>/ for a plugin.
+#                     Repeatable. A PATH that does not exist fails the build.
 #   --help
 
 set -euo pipefail
@@ -51,6 +56,7 @@ SOURCE="$PWD"
 OUT_DIR="dist"
 BUILD=false
 BIN=""
+EXTRAS=()
 
 usage() { sed -n '2,/^set /p' "$0" | grep -E '^#' | sed 's/^# \?//'; exit "${1:-0}"; }
 
@@ -64,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --bin)                   BIN="$2"; shift 2 ;;
     --out)                   OUT_DIR="$2"; shift 2 ;;
     --build)                 BUILD=true; shift ;;
+    --extra)                 EXTRAS+=("$2"); shift 2 ;;
     --help|-h)               usage 0 ;;
     *) echo "unknown option: $1" >&2; usage 2 ;;
   esac
@@ -180,6 +187,33 @@ stage_core() {
   copy_root_assets "$root"
 }
 
+copy_extras() {
+  # Copy each --extra path from $SOURCE into the staged component root at the
+  # same relative path. Missing paths fail loudly: a caller that lists a file
+  # expects it in the archive, and silence would ship one without it.
+  local root="$1" p src
+  for p in ${EXTRAS[@]+"${EXTRAS[@]}"}; do
+    case "$p" in
+      /*|..|../*|*/..|*/../*)
+        echo "ERROR: --extra path must be relative to --source and stay inside it: $p" >&2
+        exit 1 ;;
+    esac
+    p="${p%/}"
+    src="$SOURCE/$p"
+    if [[ -d "$src" ]]; then
+      mkdir -p "$root/$p"
+      cp -r "$src/." "$root/$p/"
+    elif [[ -f "$src" ]]; then
+      mkdir -p "$(dirname "$root/$p")"
+      cp "$src" "$root/$p"
+    else
+      echo "ERROR: --extra path not found: $src" >&2
+      exit 1
+    fi
+    log "Added $p"
+  done
+}
+
 write_archive() {
   local stage="$1" archive="$2"
   log "Creating $OUT_DIR/$archive"
@@ -202,6 +236,7 @@ case "$KIND" in
     maybe_build homecore
     stage=$(mktemp -d)
     stage_core "$stage"
+    copy_extras "$stage/homecore"
     render_readme core "$stage/homecore" homecore
     write_archive "$stage" "homecore-core-${VERSION}-${PLATFORM}.tar.gz"
     ;;
@@ -217,6 +252,7 @@ case "$KIND" in
     cp "$bin_path" "$root/bin/$NAME"
     chmod 755 "$root/bin/$NAME"
     [[ -f "$SOURCE/config/config.toml.example" ]] && cp "$SOURCE/config/config.toml.example" "$root/config/"
+    copy_extras "$root"
 
     render_readme plugin "$root" "$NAME"
     write_archive "$stage" "${NAME}-${VERSION}-${PLATFORM}.tar.gz"
