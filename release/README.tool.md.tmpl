@@ -1,0 +1,16 @@
+# {{BINARY_NAME}} {{VERSION}} ({{PLATFORM}})
+
+A homeCore command-line tool. One statically linked musl binary with no
+glibc, OpenSSL or other system dependencies. It needs no core on this
+machine: it talks to one over the network.
+
+## Install
+
+    tar -xzf {{BINARY_NAME}}-{{VERSION}}-{{PLATFORM}}.tar.gz
+    sudo install -m 0755 {{BINARY_NAME}}/bin/{{BINARY_NAME}} /usr/local/bin/
+
+## Use
+
+    {{BINARY_NAME}} --help
+
+The documentation is at https://homecore.io/docs/tools/{{BINARY_NAME}}.
