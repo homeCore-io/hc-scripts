@@ -50,13 +50,15 @@ on:
         required: true
         type: string
 
-      # ─── The ABI is pinned centrally, on purpose ─────────────────────────
-      # One ABI per homeCore minor. Defaulting here rather than per plugin is
-      # what stops a plugin drifting onto its own interpreter version by
-      # accident: bumping Python is one edit that moves the whole fleet.
+      # ─── Each plugin chooses its Python ──────────────────────────────────
+      # A runtime brings no Python of its own: homeCore places each plugin with
+      # an interpreter from the registry (homeCore-io/interpreters), of the
+      # minor it was built for. So any minor the signed index lists works, and
+      # the build fails with that list for one it doesn't. The default is the
+      # newest; set it in your caller to stay on an older one.
       python_version:
-        description: 'Target interpreter. Changing this moves every plugin.'
-        default: '3.12'
+        description: 'Python minor to build for, e.g. 3.13. Must be one the registry lists an interpreter for.'
+        default: '3.14'
         type: string
       manylinux:
         description: 'manylinux baseline recorded in the ABI tag.'
@@ -74,7 +76,7 @@ on:
       sdk_ref:
         description: >-
           SDK tag to build into every artifact. Pinned centrally for the same
-          reason the ABI is — the SDK is not on any index, so this is the only
+          reason as before: the SDK is not on any index, so this is the only
           thing that says which version a plugin actually ships.
 
           Moving this moves every plugin's next build, which is the point. It
@@ -166,6 +168,33 @@ jobs:
       # here has to agree with it about which Python is in play.
       - uses: astral-sh/setup-uv@v7
 
+      # The interpreter a runtime will run this on: the newest patch of the
+      # minor in the signed index. Fails here, before building, when the index
+      # has none, which is what keeps a plugin off a Python no runtime can run.
+      - name: Get the interpreter it will run on
+        id: interp
+        env:
+          INDEX_URL: ${{ inputs.registry_index_url }}
+          PY: ${{ inputs.python_version }}
+        run: |
+          set -euo pipefail
+          series="cp$(echo "$PY" | tr -d .)"
+          curl -fsSL --max-time 60 -H 'Cache-Control: no-cache' "${INDEX_URL}?cb=${GITHUB_RUN_ID}" -o index.json
+          pick="$(jq -c --arg s "$series" '
+            [.interpreters[]? | select(.kind == "python" and .abi == $s and .os == "linux" and .arch == "x86_64")]
+            | sort_by(.version | split(".") | map(tonumber)) | last // empty' index.json)"
+          if [ -z "$pick" ]; then
+            listed="$(jq -r '[.interpreters[]? | select(.kind == "python") | .version | split(".")[:2] | join(".")] | unique | join(", ")' index.json)"
+            echo "::error::Python ${PY} has no interpreter in the registry, so no runtime could run this plugin. Choose one of: ${listed:-none}"
+            exit 1
+          fi
+          url="$(jq -r .url <<<"$pick")"; sha="$(jq -r .sha256 <<<"$pick")"; ver="$(jq -r .version <<<"$pick")"
+          curl -fsSL --max-time 300 "$url" -o interp.tar.zst
+          echo "${sha}  interp.tar.zst" | sha256sum -c -
+          mkdir -p .interp && tar --zstd -xf interp.tar.zst -C .interp
+          echo "Runs on Python ${ver} (${series})"
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+
       - name: Build the artifact
         id: build
         run: |
@@ -196,6 +225,7 @@ jobs:
           .hc-scripts/smoke-python-artifact.sh \
             --artifact "${{ steps.build.outputs.artifact }}" \
             --python-version "${{ inputs.python_version }}" \
+            --interpreter .interp \
             --broker-host 127.0.0.1 --broker-port 1883
 
       - uses: actions/upload-artifact@v6

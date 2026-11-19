@@ -25,6 +25,9 @@
 #   --broker-port     MQTT port                                  (default: 1883)
 #   --timeout         seconds to wait for registration             (default: 45)
 #   --python-version  interpreter for the test venv               (default: 3.12)
+#   --interpreter     an unpacked homeCore interpreter (the folder holding
+#                     python/): install and run exactly as a runtime does, with
+#                     a uv venv on it and an offline uv install
 #   --help
 #
 # Runs only where the artifact's architecture matches the machine. An aarch64
@@ -38,6 +41,7 @@ BROKER_HOST="127.0.0.1"
 BROKER_PORT="1883"
 TIMEOUT=45
 PY_VERSION="3.12"
+INTERPRETER=""
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -49,7 +53,8 @@ while [[ $# -gt 0 ]]; do
     --broker-port)    BROKER_PORT="${2:?}"; shift 2 ;;
     --timeout)        TIMEOUT="${2:?}"; shift 2 ;;
     --python-version) PY_VERSION="${2:?}"; shift 2 ;;
-    --help|-h)        sed -n '2,32p' "$0"; exit 0 ;;
+    --interpreter)    INTERPRETER="${2:?}"; shift 2 ;;
+    --help|-h)        sed -n '2,36p' "$0"; exit 0 ;;
     *)                die "unknown option: $1" ;;
   esac
 done
@@ -74,8 +79,16 @@ print(m["id"]); print(m["package"]); print(m["entrypoint"]); print(m.get("arch",
 PY
 }
 
-note "creating a clean python $PY_VERSION environment"
-uv venv --python "$PY_VERSION" --seed "$WORK/venv" --quiet || die "could not provision python $PY_VERSION"
+if [[ -n "$INTERPRETER" ]]; then
+  [[ -x "$INTERPRETER/python/bin/python3" ]] || die "--interpreter $INTERPRETER has no python/bin/python3"
+  note "creating a clean environment on $("$INTERPRETER/python/bin/python3" -V), as a runtime does"
+  UV_PYTHON_DOWNLOADS=never uv venv --python "$INTERPRETER/python/bin/python3" "$WORK/venv" --quiet \
+    || die "could not make a venv on $INTERPRETER"
+else
+  note "creating a clean python $PY_VERSION environment"
+  uv venv --python "$PY_VERSION" --managed-python --seed "$WORK/venv" --quiet \
+    || die "could not provision python $PY_VERSION"
+fi
 VENV_PY="$WORK/venv/bin/python"
 
 mapfile -t M < <(read_manifest "$VENV_PY")
@@ -91,7 +104,8 @@ fi
 # Offline by construction: --no-index means a wheel that is not in the tarball
 # cannot be fetched from anywhere, which is exactly the operator's situation.
 note "installing offline from the wheelhouse"
-"$VENV_PY" -m pip install --no-index --find-links "$WORK/wheelhouse" "$PACKAGE" -q \
+uv pip install --quiet --offline --no-index --find-links "$WORK/wheelhouse" \
+  --python "$VENV_PY" "$PACKAGE" \
   || die "the artifact does not install from its own wheelhouse"
 
 # The plugin's config, in the shape core seeds: every plugin, in every language,
