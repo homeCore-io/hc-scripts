@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # build-archive.sh — Build distributable homeCore archives.
 #
-# Two archive kinds:
+# Three archive kinds:
 #   core       homecore/ with core binary + service templates, no plugins
 #   plugin     a single-plugin fragment under homecore/plugins/<name>/
+#   tool       a standalone command-line tool: <name>/bin/<name> and a README,
+#              for a machine that runs no core at all (hc-cli)
 #
 # There used to be a third, `appliance`, which merged core with every plugin
 # fragment into one tarball, and a --ui-dist flag that folded in the Leptos WASM
@@ -11,8 +13,9 @@
 # install at runtime from the signed registry, so nothing produced or consumed
 # either.
 #
-# Every archive's top-level directory is `homecore/` so users extract
-# wherever they want — `tar -xf <archive>` produces a `homecore/` tree.
+# A core or plugin archive's top-level directory is `homecore/` so users
+# extract wherever they want — `tar -xf <archive>` produces a `homecore/` tree.
+# A tool's is its own name, since it belongs to no install.
 # Plugin fragments merge into an existing `homecore/` tree with no
 # overwrite of unrelated files.
 #
@@ -26,11 +29,11 @@
 #             the binary at the standard cargo path
 #
 # Usage:
-#   build-archive.sh --kind <core|plugin> [options]
+#   build-archive.sh --kind <core|plugin|tool> [options]
 #
 # Options:
-#   --kind            core | plugin                    (required)
-#   --name            plugin crate name (required for --kind plugin)
+#   --kind            core | plugin | tool             (required)
+#   --name            crate name (required for --kind plugin and tool)
 #   --target          rust target triple, e.g. x86_64-unknown-linux-musl
 #                     (default: host)
 #   --version         version label baked into filename
@@ -43,6 +46,8 @@
 #                     into the archive at the same relative path: under homecore/
 #                     for core, under homecore/plugins/<name>/ for a plugin.
 #                     Repeatable. A PATH that does not exist fails the build.
+#   --extra-bin PATH  also put this prebuilt binary in the archive's bin/, beside
+#                     the main one (core ships hc-cli this way). Repeatable.
 #   --help
 
 set -euo pipefail
@@ -57,6 +62,7 @@ OUT_DIR="dist"
 BUILD=false
 BIN=""
 EXTRAS=()
+EXTRA_BINS=()
 
 usage() { sed -n '2,/^set /p' "$0" | grep -E '^#' | sed 's/^# \?//'; exit "${1:-0}"; }
 
@@ -71,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --out)                   OUT_DIR="$2"; shift 2 ;;
     --build)                 BUILD=true; shift ;;
     --extra)                 EXTRAS+=("$2"); shift 2 ;;
+    --extra-bin)             EXTRA_BINS+=("$2"); shift 2 ;;
     --help|-h)               usage 0 ;;
     *) echo "unknown option: $1" >&2; usage 2 ;;
   esac
@@ -79,10 +86,10 @@ done
 # ── Validate ────────────────────────────────────────────────────────
 [[ -n "$KIND" ]] || { echo "--kind required" >&2; usage 2; }
 case "$KIND" in
-  core|plugin) ;;
-  *) echo "--kind must be one of core, plugin" >&2; usage 2 ;;
+  core|plugin|tool) ;;
+  *) echo "--kind must be one of core, plugin, tool" >&2; usage 2 ;;
 esac
-[[ "$KIND" = "plugin" && -z "$NAME" ]] && { echo "--kind plugin requires --name" >&2; usage 2; }
+[[ "$KIND" != "core" && -z "$NAME" ]] && { echo "--kind $KIND requires --name" >&2; usage 2; }
 
 # Default target = host
 if [[ -z "$TARGET" ]]; then
@@ -164,7 +171,7 @@ copy_root_assets() {
   # Files that go at the root of homecore/ in a core archive.
   local root="$1"
   for f in LICENSE LICENSE-MIT LICENSE-APACHE; do
-    [[ -f "$SOURCE/$f" ]] && cp "$SOURCE/$f" "$root/"
+    if [[ -f "$SOURCE/$f" ]]; then cp "$SOURCE/$f" "$root/"; fi
   done
 }
 
@@ -214,10 +221,21 @@ copy_extras() {
   done
 }
 
+copy_extra_bins() {
+  # Each --extra-bin into <root>/bin/, under its own file name.
+  local bindir="$1" b
+  for b in ${EXTRA_BINS[@]+"${EXTRA_BINS[@]}"}; do
+    [[ -f "$b" ]] || { echo "ERROR: --extra-bin not found: $b" >&2; exit 1; }
+    cp "$b" "$bindir/"
+    chmod 755 "$bindir/$(basename "$b")"
+    log "Added bin/$(basename "$b")"
+  done
+}
+
 write_archive() {
-  local stage="$1" archive="$2"
+  local stage="$1" archive="$2" top="${3:-homecore}"
   log "Creating $OUT_DIR/$archive"
-  tar -C "$stage" -czf "$OUT_DIR/$archive" homecore
+  tar -C "$stage" -czf "$OUT_DIR/$archive" "$top"
   (cd "$OUT_DIR" && sha256sum "$archive" > "$archive.sha256")
   rm -rf "$stage"
 }
@@ -236,6 +254,7 @@ case "$KIND" in
     maybe_build homecore
     stage=$(mktemp -d)
     stage_core "$stage"
+    copy_extra_bins "$stage/homecore/bin"
     copy_extras "$stage/homecore"
     render_readme core "$stage/homecore" homecore
     write_archive "$stage" "homecore-core-${VERSION}-${PLATFORM}.tar.gz"
@@ -256,6 +275,24 @@ case "$KIND" in
 
     render_readme plugin "$root" "$NAME"
     write_archive "$stage" "${NAME}-${VERSION}-${PLATFORM}.tar.gz"
+    ;;
+
+  tool)
+    maybe_build "$NAME"
+    stage=$(mktemp -d)
+    root="$stage/$NAME"
+    mkdir -p "$root/bin"
+
+    bin_path="${BIN:-$(default_bin "$NAME")}"
+    [[ -f "$bin_path" ]] || { echo "ERROR: binary not found: $bin_path" >&2; exit 1; }
+    cp "$bin_path" "$root/bin/$NAME"
+    chmod 755 "$root/bin/$NAME"
+    copy_extra_bins "$root/bin"
+    copy_extras "$root"
+    copy_root_assets "$root"
+
+    render_readme tool "$root" "$NAME"
+    write_archive "$stage" "${NAME}-${VERSION}-${PLATFORM}.tar.gz" "$NAME"
     ;;
 
 esac

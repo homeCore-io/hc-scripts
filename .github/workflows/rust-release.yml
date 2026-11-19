@@ -91,6 +91,24 @@ on:
         required: false
         default: 'Cargo.toml'
         type: string
+      archive_kind:
+        description: >-
+          build-archive.sh's --kind. Empty (the default) keeps the old rule:
+          `core` for homecore, `plugin` for anything else. `tool` packages a
+          standalone command-line tool as <name>/bin/<name>, for a machine
+          that runs no core (hc-cli).
+        required: false
+        default: ''
+        type: string
+      extra_binaries:
+        description: >-
+          Newline-separated cargo binary targets to build beside binary_name
+          and ship in the archive's bin/ and, when publishing an image, in the
+          build context as <name>-<arch> for the Dockerfile to COPY. Core passes
+          hc-cli, so the core archive and the hc-core image both carry it.
+        required: false
+        default: ''
+        type: string
       config_example:
         description: 'Path to config example file to include under config/ in the archive. Empty to skip.'
         required: false
@@ -270,6 +288,8 @@ jobs:
             cargo-${{ matrix.target }}-
 
       - name: Build (${{ matrix.target }})
+        env:
+          EXTRA_BINARIES: ${{ inputs.extra_binaries }}
         run: |
           set -eux
           # Build inside rust:alpine for the target arch — same toolchain
@@ -285,15 +305,18 @@ jobs:
           else
               IMAGE="rust:${{ inputs.rust_version }}-alpine"
           fi
+          BIN_ARGS="--bin ${{ inputs.binary_name }}"
+          for b in $EXTRA_BINARIES; do BIN_ARGS="$BIN_ARGS --bin $b"; done
           docker run --rm \
             --platform linux/${{ matrix.arch }} \
+            -e BIN_ARGS="$BIN_ARGS" \
             -v "$PWD:/src" \
             -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
             -w /src \
             "$IMAGE" \
             sh -c '
               apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
-              cargo build --release --bin ${{ inputs.binary_name }}
+              cargo build --release $BIN_ARGS
             '
 
       - name: Fetch hc-scripts (for build-archive.sh)
@@ -323,6 +346,8 @@ jobs:
         id: package
         env:
           EXTRA_FILES: ${{ inputs.extra_files }}
+          EXTRA_BINARIES: ${{ inputs.extra_binaries }}
+          ARCHIVE_KIND: ${{ inputs.archive_kind }}
         run: |
           set -eux
           # The cargo build inside Docker writes target/release as root,
@@ -334,9 +359,12 @@ jobs:
 
           # core: --kind core   (binary_name == homecore)
           # plugin: --kind plugin --name <binary_name>
-          # everything else (e.g. hc-tui) packaged as a generic plugin
-          # fragment so the per-archive shape stays uniform.
-          if [ "${{ inputs.binary_name }}" = "homecore" ]; then
+          # archive_kind, when given, wins: hc-cli passes `tool`. Anything
+          # else (e.g. hc-tui) is packaged as a generic plugin fragment so
+          # the per-archive shape stays uniform.
+          if [ -n "$ARCHIVE_KIND" ]; then
+              KIND_ARGS="--kind $ARCHIVE_KIND --name ${{ inputs.binary_name }}"
+          elif [ "${{ inputs.binary_name }}" = "homecore" ]; then
               KIND_ARGS="--kind core"
           else
               KIND_ARGS="--kind plugin --name ${{ inputs.binary_name }}"
@@ -349,6 +377,12 @@ jobs:
               p="$(printf '%s' "$p" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
               if [ -n "$p" ]; then EXTRA_ARGS+=(--extra "$p"); fi
           done <<< "$EXTRA_FILES"
+
+          # extra_binaries: built beside the main one, each into bin/.
+          for b in $EXTRA_BINARIES; do
+              [ -f "target/release/$b" ] || { echo "::error::extra binary not found at target/release/$b"; exit 1; }
+              EXTRA_ARGS+=(--extra-bin "target/release/$b")
+          done
 
           # --source is where config/ and README.md are read from, which in a
           # monorepo is the component's directory, not the repo root. --bin is
@@ -533,6 +567,8 @@ jobs:
           path: artifacts
 
       - name: Stage build context
+        env:
+          EXTRA_BINARIES: ${{ inputs.extra_binaries }}
         run: |
           set -eux
           mkdir -p build-context
@@ -571,6 +607,11 @@ jobs:
                   linux-aarch64) ARCH=arm64 ;;
               esac
               cp "$BIN" "build-context/${{ inputs.binary_name }}-${ARCH}"
+              for b in $EXTRA_BINARIES; do
+                  XBIN=$(find "$tmpdir" -type f -path "*/bin/${b}")
+                  [ -n "$XBIN" ] || { echo "::error::${b} missing from ${GZ}"; exit 1; }
+                  cp "$XBIN" "build-context/${b}-${ARCH}"
+              done
           done
 
           # Image recipe. Two sources:

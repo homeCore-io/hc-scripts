@@ -1,17 +1,18 @@
 # homeCore {{VERSION}} ({{PLATFORM}})
 
-Statically-linked musl binary. Extract this archive and you have the core
-kernel, embedded MQTT broker, and Web UI in a single `homecore/` tree —
-no glibc, no OpenSSL, no system dependencies.
+Statically linked musl binaries. Extract this archive and you have the core
+and its embedded MQTT broker in a single `homecore/` tree, with no glibc,
+OpenSSL or other system dependencies. The web app is hc-web, its own
+container.
 
 ## Layout
 
     homecore/
     ├── bin/homecore                # the daemon
+    ├── bin/hc-cli                  # the command-line tool
     ├── config/
     │   ├── homecore.toml.example   # copy to homecore.toml and edit
     │   └── profiles/               # ecosystem profiles (Tasmota, Shelly, …)
-    ├── ui/dist/                    # Leptos Web UI WASM bundle
     ├── scripts/
     │   └── service-templates/      # systemd unit template
     └── plugins/                    # plugin fragments extract here
