@@ -101,13 +101,15 @@ KEEP_BUILD_TRAP() { [[ $KEEP_BUILD -eq 1 ]] || rm -rf "$BUILD_DIR"; }
 trap KEEP_BUILD_TRAP EXIT
 
 # ── Everything runs on the TARGET interpreter ───────────────────────────────
-# Not the machine's. uv fetches it if it is not installed, which costs seconds
+# Not the machine's: --managed-python takes uv's own python-build-standalone
+# build, the one homeCore's interpreters are made from, even when the runner
+# has a system Python of the same minor. uv fetches it if it is not installed, which costs seconds
 # and removes a whole class of doubt: environment markers evaluate for the
 # interpreter the artifact is built for, by construction rather than by flag.
 # The wheels this produces are pure-Python either way; what changes is which
 # dependencies the resolver decides are needed.
 note "preparing a python $PY_VERSION build environment"
-uv venv --python "$PY_VERSION" --seed "$BUILD_DIR/venv" --quiet \
+uv venv --python "$PY_VERSION" --managed-python --seed "$BUILD_DIR/venv" --quiet \
   || die "could not provision python $PY_VERSION — uv could not fetch it"
 PYTHON="$BUILD_DIR/venv/bin/python"
 
