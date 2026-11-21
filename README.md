@@ -166,8 +166,8 @@ ships**. Do not pass `rust_version: "stable"` from a caller — that gates merge
 on a compiler you never ship with, and turns CI red on Rust release day with no
 code change.
 
-`node-ci.yml` pins `node_version` (24) for the same reason. Keep it equal to the
-`node:24-alpine` the web app's Dockerfile builds from, and bump the two
+`node-ci.yml` pins `node_version` (26) for the same reason. Keep it equal to the
+`node:26-alpine` the web app's Dockerfile builds from, and bump the two
 together, or CI is no longer testing what ships.
 
 The rest of this section is about the retired Flutter app (`hc-web-flutter`),

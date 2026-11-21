@@ -40,9 +40,10 @@ on:
         description: 'Rust toolchain to use (matches rustup channel/version).
           Pinned default — bump deliberately rather than tracking "stable".
           Aligned with hc-scripts/rust-release.yml + Dockerfile pins as of
-          BPF-2.2 (2026-05-04); 1.95 → 1.99 on 2026-10-18.'
+          BPF-2.2 (2026-05-04); 1.95 → 1.99 on 2026-10-18; 1.99 → 1.100 on
+          2026-11-21.'
         required: false
-        default: "1.99"
+        default: "1.100"
         type: string
       run_clippy:
         description: 'Run clippy with -D warnings.'
