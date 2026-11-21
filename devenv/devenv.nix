@@ -18,22 +18,23 @@
   languages.rust = {
     enable = true;
     channel = "stable";
-    version = "1.99.1";
+    version = "1.100.0";
   };
 
-  # Python plugins and the Python SDK. 3.12 is the interpreter
-  # python-release.yml builds artifacts for.
+  # Python plugins and the Python SDK. 3.15 is the minor python-release.yml
+  # builds plugins for by default, and the newest the registry ships an
+  # interpreter for (homeCore-io/interpreters). Bump them together.
   languages.python = {
     enable = true;
-    package = pkgs.python312;
+    package = pkgs.python315;
     uv.enable = true;
   };
 
-  # The web app (hc-web-svelte) and the JS SDK. Node 24 matches the
-  # node:24-alpine image the app builds from and node-ci.yml's pin.
+  # The web app (hc-web-svelte) and the JS SDK. Node 26 (LTS) matches the
+  # node:26-alpine image the app builds from and node-ci.yml's pin.
   languages.javascript = {
     enable = true;
-    package = pkgs.nodejs_24;
+    package = pkgs.nodejs_26;
   };
 
   # --home > HOMECORE_HOME > cwd, per core/homecore/src/main.rs. Anchor both to

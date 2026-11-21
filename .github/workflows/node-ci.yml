@@ -42,7 +42,7 @@ on:
           devenv.nix, so a build that passes locally passes here for the same
           reasons.'
         required: false
-        default: "24"
+        default: "26"
         type: string
       run_tests:
         description: 'Run npm test.'
@@ -91,7 +91,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
           cache: npm

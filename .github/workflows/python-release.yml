@@ -58,7 +58,7 @@ on:
       # newest; set it in your caller to stay on an older one.
       python_version:
         description: 'Python minor to build for, e.g. 3.13. Must be one the registry lists an interpreter for.'
-        default: '3.14'
+        default: '3.15'
         type: string
       manylinux:
         description: 'manylinux baseline recorded in the ABI tag.'
@@ -166,7 +166,7 @@ jobs:
 
       # The build script provisions the target interpreter itself, so nothing
       # here has to agree with it about which Python is in play.
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.4.0
 
       # The interpreter a runtime will run this on: the newest patch of the
       # minor in the signed index. Fails here, before building, when the index
@@ -228,7 +228,7 @@ jobs:
             --interpreter .interp \
             --broker-host 127.0.0.1 --broker-port 1883
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: artifact-${{ matrix.arch }}
           path: |
@@ -244,7 +244,7 @@ jobs:
             echo "executed=${{ matrix.arch == 'x86_64' }}"
           } > "dist/${{ matrix.arch }}.meta"
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: meta-${{ matrix.arch }}
           path: dist/*.meta
@@ -256,7 +256,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           pattern: '*'
           path: incoming

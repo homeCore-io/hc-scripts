@@ -129,9 +129,9 @@ on:
           deliberately rather than tracking "stable" so a new Rust major
           doesn''t silently change CI behavior. Was "stable" pre-2026-05-04
           when alpine + Rust pinning landed (BPF-2.2); 1.95 → 1.99 on
-          2026-10-18.'
+          2026-10-18; 1.99 → 1.100 on 2026-11-21.'
         required: false
-        default: "1.99"
+        default: "1.100"
         type: string
       # ─── Docker image publishing (opt-in) ────────────────────────────────
       publish_docker_image:
@@ -457,7 +457,7 @@ jobs:
         # round to regress: it 404s on GitHub's asset-update API whenever an
         # asset of the same name already exists, which is both the
         # double-upload case above and any re-run over a previous attempt.
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
@@ -750,9 +750,9 @@ jobs:
       # plugin serves them itself, so the package is the only place they go.
       - name: Set up Node for the plugin's UI
         if: hashFiles(format('{0}/ui/package.json', inputs.source_dir)) != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Package tar.zst and attach to release
         id: pkg
