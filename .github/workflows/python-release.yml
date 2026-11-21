@@ -166,7 +166,7 @@ jobs:
 
       # The build script provisions the target interpreter itself, so nothing
       # here has to agree with it about which Python is in play.
-      - uses: astral-sh/setup-uv@v10.4.0.4.0
+      - uses: astral-sh/setup-uv@v10.4.0
 
       # The interpreter a runtime will run this on: the newest patch of the
       # minor in the signed index. Fails here, before building, when the index
