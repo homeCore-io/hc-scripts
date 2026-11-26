@@ -48,6 +48,9 @@ done
 
 [[ -f "$ARTIFACT" ]] || die "--artifact is required and must exist"
 if [[ -n "$INTERPRETER" ]]; then
+  # Absolute: the plugin is launched from inside the work folder, where a
+  # relative path (the release workflow passes .interp) no longer resolves.
+  INTERPRETER="$(cd "$INTERPRETER" 2>/dev/null && pwd)" || die "--interpreter: no such folder"
   NODE="$INTERPRETER/node/bin/node"
   [[ -x "$NODE" ]] || die "--interpreter $INTERPRETER has no node/bin/node"
 else
