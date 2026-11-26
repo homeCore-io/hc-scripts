@@ -1,0 +1,279 @@
+# Reusable release workflow for homeCore Node.js plugins.
+#
+# The Node counterpart of python-release.yml. A Node plugin ships as one
+# hermetic artifact, its files and node_modules installed from its lock, that a
+# Node plugin runtime unpacks and runs with no npm and no network. See
+# build-node-artifact.sh and smoke-node-artifact.sh in this repo, both
+# runnable on a laptop.
+#
+# Pure JavaScript only, so it is built once and the same file is listed in the
+# registry for every architecture in `arches`: what differs per CPU is the
+# Node homeCore places it with, from homeCore-io/interpreters.
+#
+# Caller example:
+#   # hc-matter/.github/workflows/release.yml
+#   name: Release
+#   on:
+#     push:
+#       tags: ['v*']
+#   jobs:
+#     release:
+#       uses: homeCore-io/hc-scripts/.github/workflows/node-release.yml@main
+#       with:
+#         plugin_dir: .
+#       secrets: inherit
+
+name: node-release
+
+on:
+  workflow_call:
+    inputs:
+      plugin_dir:
+        description: 'Directory holding the plugin package.json and package-lock.json.'
+        required: true
+        type: string
+      # Each plugin chooses its Node major; any the signed index lists an
+      # interpreter for works, and the build fails with that list otherwise.
+      node_version:
+        description: 'Node.js major to build for, e.g. 24. Must be one the registry lists an interpreter for.'
+        default: '24'
+        type: string
+      platform:
+        description: 'Platform recorded in the ABI tag.'
+        default: 'glibc_2_28'
+        type: string
+      arches:
+        description: 'JSON array of architectures to list the artifact for.'
+        default: '["x86_64", "aarch64"]'
+        type: string
+      publish_registry:
+        description: 'Notify the registry and verify the entry is served.'
+        default: true
+        type: boolean
+      registry_repo:
+        default: 'homeCore-io/registry'
+        type: string
+      registry_index_url:
+        default: 'https://homeCore-io.github.io/registry/index.json'
+        type: string
+      registry_verify_timeout_secs:
+        default: 600
+        type: number
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      plugin_id: ${{ steps.build.outputs.plugin_id }}
+      name: ${{ steps.build.outputs.name }}
+      version: ${{ steps.build.outputs.version }}
+      abi: ${{ steps.build.outputs.abi }}
+      description: ${{ steps.build.outputs.description }}
+      category: ${{ steps.build.outputs.category }}
+      sha256: ${{ steps.build.outputs.sha256 }}
+      size: ${{ steps.build.outputs.size }}
+      file: ${{ steps.file.outputs.file }}
+      interpreter: ${{ steps.interp.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The archive name, plugin.toml and the registry entry carry the
+      # package.json version, while the Release is filed under the tag.
+      - name: Check the tag matches the package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+          PLUGIN_DIR: ${{ inputs.plugin_dir }}
+        run: |
+          set -euo pipefail
+          tag_version="$(printf '%s' "$TAG" \
+            | sed -nE 's/^(.*-)?v([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]*)?)$/\2/p')"
+          [ -n "$tag_version" ] || { echo "::error::Tag $TAG does not end in vX.Y.Z."; exit 1; }
+          pkg_version="$(jq -r .version "$PLUGIN_DIR/package.json")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error file=$PLUGIN_DIR/package.json::Tag $TAG says $tag_version, but package.json says $pkg_version. Set its version to $tag_version and tag again."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          repository: homeCore-io/hc-scripts
+          ref: main
+          path: .hc-scripts
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      # The Node a runtime will run this on: the newest patch of the major in
+      # the signed index. Fails here, before building, when the index has none.
+      - name: Get the interpreter it will run on
+        id: interp
+        env:
+          INDEX_URL: ${{ inputs.registry_index_url }}
+          MAJOR: ${{ inputs.node_version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --max-time 60 -H 'Cache-Control: no-cache' "${INDEX_URL}?cb=${GITHUB_RUN_ID}" -o index.json
+          pick="$(jq -c --arg s "node${MAJOR}" '
+            [.interpreters[]? | select(.kind == "node" and .abi == $s and .os == "linux" and .arch == "x86_64")]
+            | sort_by(.version | split(".") | map(tonumber)) | last // empty' index.json)"
+          if [ -z "$pick" ]; then
+            listed="$(jq -r '[.interpreters[]? | select(.kind == "node") | .abi | ltrimstr("node")] | unique | join(", ")' index.json)"
+            echo "::error::Node.js ${MAJOR} has no interpreter in the registry, so no runtime could run this plugin. Choose one of: ${listed:-none}"
+            exit 1
+          fi
+          url="$(jq -r .url <<<"$pick")"; sha="$(jq -r .sha256 <<<"$pick")"; ver="$(jq -r .version <<<"$pick")"
+          curl -fsSL --max-time 300 "$url" -o interp.tar.zst
+          echo "${sha}  interp.tar.zst" | sha256sum -c -
+          mkdir -p .interp && tar --zstd -xf interp.tar.zst -C .interp
+          echo "Runs on Node.js ${ver}"
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+
+      # A plugin written in TypeScript builds here; a plain JS one has no build
+      # script and skips it.
+      - name: Build the plugin
+        working-directory: ${{ inputs.plugin_dir }}
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build --if-present
+
+      - name: Build the artifact
+        id: build
+        run: |
+          .hc-scripts/build-node-artifact.sh \
+            --plugin "${{ inputs.plugin_dir }}" \
+            --node-version "${{ inputs.node_version }}" \
+            --abi "node${{ inputs.node_version }}-${{ inputs.platform }}" \
+            --out dist
+
+      - name: Start a scratch broker
+        run: |
+          docker run -d --name broker -p 1883:1883 eclipse-mosquitto:2 \
+            sh -c 'printf "listener 1883\nallow_anonymous true\n" > /m.conf && mosquitto -c /m.conf'
+          for i in $(seq 1 30); do
+            docker exec broker sh -c 'nc -z 127.0.0.1 1883' && break
+            sleep 1
+          done
+
+      - name: Run it as a runtime would and prove it registers
+        run: |
+          .hc-scripts/smoke-node-artifact.sh \
+            --artifact "${{ steps.build.outputs.artifact }}" \
+            --interpreter .interp \
+            --broker-host 127.0.0.1 --broker-port 1883
+
+      - name: Name the file
+        id: file
+        run: echo "file=$(basename '${{ steps.build.outputs.artifact }}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifact
+          path: dist/*.tar.zst
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: artifact
+          path: incoming
+
+      - name: Release notes
+        env:
+          ARCHES: ${{ inputs.arches }}
+          INTERP: ${{ needs.build.outputs.interpreter }}
+        run: |
+          {
+            echo "A Node.js plugin for homeCore plugin runtimes (\`${{ needs.build.outputs.abi }}\`)."
+            echo
+            echo "Pure JavaScript: the same file runs on $(jq -r 'join(" and ")' <<<"$ARCHES"). It was installed and run on Node.js ${INTERP} (x86_64) against a broker before release."
+          } > notes.md
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: incoming/*.tar.zst
+          body_path: notes.md
+
+      - name: Publish to the plugin registry
+        if: inputs.publish_registry
+        env:
+          GH_TOKEN: ${{ secrets.REGISTRY_DISPATCH_PAT }}
+          ARCHES: ${{ inputs.arches }}
+          PLUGIN_ID: ${{ needs.build.outputs.plugin_id }}
+          NAME: ${{ needs.build.outputs.name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ABI: ${{ needs.build.outputs.abi }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          SIZE: ${{ needs.build.outputs.size }}
+          FILE: ${{ needs.build.outputs.file }}
+          DESCRIPTION: ${{ needs.build.outputs.description }}
+          CATEGORY: ${{ needs.build.outputs.category }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::REGISTRY_DISPATCH_PAT is not set, so this plugin will NOT be installable, but publish_registry is true."
+            exit 1
+          fi
+          url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/${FILE}"
+          for arch in $(jq -r '.[]' <<<"$ARCHES"); do
+            gh api "repos/${{ inputs.registry_repo }}/dispatches" \
+              -f event_type=publish-plugin \
+              -F "client_payload[id]=${PLUGIN_ID}" \
+              -F "client_payload[name]=${NAME:-$PLUGIN_ID}" \
+              -F "client_payload[version]=${VERSION}" \
+              -F "client_payload[runtime]=node" \
+              -F "client_payload[abi]=${ABI}" \
+              -F "client_payload[artifact][os]=linux" \
+              -F "client_payload[artifact][arch]=${arch}" \
+              -F "client_payload[artifact][url]=${url}" \
+              -F "client_payload[artifact][sha256]=${SHA256}" \
+              -F "client_payload[artifact][size]=${SIZE}" \
+              -F "client_payload[about][description]=${DESCRIPTION}" \
+              -F "client_payload[about][category]=${CATEGORY}"
+            echo "Notified ${{ inputs.registry_repo }}: ${PLUGIN_ID} ${VERSION} ${arch}"
+          done
+
+      - name: Verify it reached the registry index
+        if: inputs.publish_registry
+        env:
+          INDEX_URL: ${{ inputs.registry_index_url }}
+          TIMEOUT_SECS: ${{ inputs.registry_verify_timeout_secs }}
+          ARCHES: ${{ inputs.arches }}
+          PLUGIN_ID: ${{ needs.build.outputs.plugin_id }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ABI: ${{ needs.build.outputs.abi }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -uo pipefail
+          deadline=$(( SECONDS + TIMEOUT_SECS ))
+          attempt=0
+          while :; do
+            attempt=$(( attempt + 1 ))
+            body="$(curl -fsSL --max-time 30 -H 'Cache-Control: no-cache' "${INDEX_URL}?cb=${GITHUB_RUN_ID}-${attempt}" 2>/dev/null)"
+            missing=""
+            for arch in $(jq -r '.[]' <<<"$ARCHES"); do
+              found="$(printf '%s' "${body:-}" | jq -r --arg id "$PLUGIN_ID" --arg v "$VERSION" \
+                --arg arch "$arch" --arg abi "$ABI" --arg sha "$SHA256" '
+                  [ .plugins[]? | select(.id == $id) | .versions[]? | select(.version == $v)
+                    | .artifacts[]? | select(.arch == $arch and .runtime == "node" and .abi == $abi and .sha256 == $sha)
+                  ] | length' 2>/dev/null)"
+              [ "${found:-0}" -ge 1 ] || missing="$missing $arch"
+            done
+            if [ -z "$missing" ]; then
+              echo "Published and verified after ${attempt} attempt(s)."
+              exit 0
+            fi
+            if [ $SECONDS -ge $deadline ]; then
+              echo "::error::${PLUGIN_ID} ${VERSION} never appeared in the served index for:${missing}. The release exists but is NOT installable."
+              exit 1
+            fi
+            sleep 15
+          done

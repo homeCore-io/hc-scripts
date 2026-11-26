@@ -11,21 +11,31 @@ Work on `develop`, then PR to `main`.
 | `.github/workflows/rust-ci.yml` | every Rust repo's `ci.yml` — fmt, clippy, test |
 | `.github/workflows/rust-release.yml` | every Rust repo's `release.yml`: build, archive (plus any `extra_files`), the `hc-core` image, signed registry artifacts for plugins |
 | `.github/workflows/node-ci.yml` | `hc-web-svelte`'s `ci.yml` and `release.yml` (typecheck, lint, format, test, build) |
-| `.github/workflows/python-release.yml` | Python plugins' `release.yml`: a hermetic artifact a plugin runtime installs offline (none released yet) |
+| `.github/workflows/python-release.yml` | Python plugins' `release.yml`: a hermetic artifact a plugin runtime installs offline |
+| `.github/workflows/node-release.yml` | Node.js plugins' `release.yml`: the plugin and its `node_modules`, pure JS, one file listed for every architecture |
 | `.github/workflows/flutter-ci.yml` | the retired Flutter app (`hc-web-flutter`), kept for its repo's history |
 | `.github/workflows/cleanup-containers.yml` | GHCR retention |
 
 `node-ci.yml` is the TypeScript counterpart of `rust-ci.yml` and follows the
 same rules below: the pinned toolchain, the `permissions` block, the
 develop-red tracking issue. The web app publishes its own image from its own
-`release.yml` (its `Dockerfile` lives in its repo, not in `homeCore-io/docker`),
-so there is no `node-release.yml`.
+`release.yml` (its `Dockerfile` lives in its repo, not in `homeCore-io/docker`).
+`node-release.yml` is for plugins that run in a Node.js plugin runtime, not for
+the app.
 
 `python-release.yml` builds against the Python SDK tag in its `sdk_ref` input
 (default `v0.5.6`; move it when a new SDK release should reach every plugin).
 On a tag push it first checks that the tag's trailing `vX.Y.Z` equals the
 plugin's `pyproject.toml` version and fails before building if not, the same
 gate `rust-release.yml` applies to `Cargo.toml`.
+
+`node-release.yml` runs `build-node-artifact.sh` and `smoke-node-artifact.sh`.
+The plugin's `package.json` carries `"homecore": { "id", "name", "category",
+"ui" }` and depends on `homecore-plugin-sdk`; its `package-lock.json` is what
+gets installed (`npm ci --omit=dev --omit=optional --ignore-scripts`), and a
+native addon anywhere in it fails the build, since one artifact serves every
+CPU. The artifact is tested on the Node the registry would place it with,
+the newest patch of `node_version` (default `24`).
 
 ## Workspace tooling
 
